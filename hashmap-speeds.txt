@@ -1,0 +1,21 @@
+- AF_XDP without hash map (memcpy key in global var):       8.74 Mpps   -> 114 ns
+- AF_XDP with libbpf hash map:                              4.48 Mpps   -> 223 ns   -> 109 ns per lookup
+- AF_XDP with uthash hash map:                              4.37 Mpps   -> 229 ns   -> 115 ns per lookup
+- AF_XDP BP without hash map (memcpy key in global var):    10.77 Mpps  -> 93 ns
+- AF_XDP BP with libbpf hash map:                           7.03 Mpps   -> 142 ns   -> 49 ns per lookup
+- AF_XDP BP with uthash hash map:                           6.40 Mpps   -> 156 ns   -> 53 ns per lookup
+- AF_XDP BP with libbpf hash map 100k entries:              5.23 Mpps   -> 191 ns   -> 98 ns per lookup
+- AF_XDP BP with uthash hash map 100k entries:              4.80 Mpps   -> 208 ns   -> 115 ns per lookup
+- XDP without hash map (copy key in array table):           7.25 Mpps   -> 138 ns
+- XDP with hash map:                                        5.97 Mpps   -> 168 ns   -> 30 ns per lookup
+- XDP with hash map 100k entries:                           4.05 Mpps   -> 247 ns   -> 109 ns per lookup
+
+- Performing only packet parsing and 5-tuple hash:
+- AF_XDP baseline:      9.16 Mpps   -> 109 ns
+- AF_XDP jhash:         5.33 Mpps   -> 188 ns   -> 79 ns per hash
+- AF_XDP BP baseline:   11.30 Mpps  -> 88 ns
+- AF_XDP BP jhash:      7.67 Mpps   -> 130 ns   -> 42 ns per hash
+- AF_XDP 2C baseline:   8.15 Mpps   -> 123 ns
+- AF_XDP 2C jhash:      5.49 Mpps   -> 182 ns   -> 59 ns per hash
+- XDP baseline:         7.68 Mpps   -> 130 ns
+- XDP jhash:            5.87 Mpps   -> 170 ns   -> 40 ns per hash
