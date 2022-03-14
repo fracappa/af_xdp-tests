@@ -33,9 +33,10 @@ volatile unsigned long lookup_time = 0;
 #endif
 
 struct bpf_object *obj;
+int contracts_map;
 struct xsknfv_config config;
 
-pthread_t clock_thread;
+pthread_t refill_thread;
 
 
 #define IP_STRLEN 16
@@ -51,11 +52,43 @@ pthread_t clock_thread;
 struct contract_entry{
 	struct session_id key;
 	struct contract contract;	// Policy to be applied to the session key
+    int size;
 };
 
 struct khashmap contracts;
 //struct khashmap clock_hashmap;
 struct contract_entry *entries;
+
+void *refill_counter(void *args){
+	struct contract_entry *entry;
+	entry = (struct contract_entry *)args;
+	int ret;
+    // struct contract_entry *entry;
+	// entry = (struct contract_entry *)args;
+	// struct session_id key = entry->key;
+	// struct contract contract = entry->contract;
+	// int ret, err;
+	// uint64_t rate = entry->contract.rate;
+	// uint64_t window_size = entry->contract.window_size;
+	// uint64_t amount;
+
+
+    while(1){
+		// amount = rate * window_size;
+		// // __sync_fetch_and_add(contract.counter, amount);
+		// contract.counter = amount;
+		//printf("counter ->_> %lu\n", entry->contract.counter);
+
+		entry->contract.counter = entry->contract.rate;
+
+		ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
+			if (ret) {
+				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
+			}
+		usleep(1);
+    }
+    pthread_exit(0);
+}
 
 // void *update_clock(void * args){
 // 	struct bpf_map *map;
@@ -228,14 +261,17 @@ static void init_contracts(const char *conctracts_path)
 		/* initialize contract attributes associated to the session key */
 		entry->contract.action = action;
 		entry->contract.local = local;
-        entry->contract.counter = rate * window_size;
-		//pthread_spin_init(&entry->contract.lock, 0);
+        entry->contract.rate = rate;
+        entry->contract.window_size = window_size;
+        entry->contract.counter = rate;
+
+        printf("rate: %lu\n",  entry->contract.rate );
+        printf("coutner %lu\n", entry->contract.counter);
 
 		i++;
 
 		if (config.working_mode & MODE_XDP) {
 			struct bpf_map *map;
-			int i, contracts_map;
 
 			map = bpf_object__find_map_by_name(obj, "contracts");
 			contracts_map = bpf_map__fd(map);
@@ -269,6 +305,7 @@ static void init_contracts(const char *conctracts_path)
 			}
 		}
 	}
+    pthread_create(&refill_thread, NULL, refill_counter, entry);
 	printf("Contract loaded..\n");
     return;
 }
@@ -350,8 +387,6 @@ int main(int argc, char **argv)
 	xsknfv_start_workers();
 
 	init_stats();
-
-	//pthread_create(&clock_thread, NULL, update_clock, NULL);
 
 
 	while (!benchmark_done) {

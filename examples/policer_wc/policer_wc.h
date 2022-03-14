@@ -1,11 +1,20 @@
 #include <stdint.h>
 
+
 #define MAX_CONTRACTS 100000
 
-enum action_type{
+enum {
     ACTION_PASS,
     ACTION_LIMIT,
     ACTION_DROP
+};
+
+struct contract{
+    int8_t action;
+    int8_t local;
+    int64_t rate;
+    int64_t window_size;
+    int64_t counter;
 };
 
 struct session_id {
@@ -16,8 +25,4 @@ struct session_id {
 	uint8_t proto;
 } __attribute__((packed));
 
-struct contract{
-    uint8_t action;
-    uint8_t local;
-    int64_t counter;
-};
+
