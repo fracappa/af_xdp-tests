@@ -32,10 +32,11 @@ static int opt_app_stats;
 volatile unsigned long lookup_time = 0;
 #endif
 
-struct bpf_object *obj;
-int contracts_map;
+struct bpf_object *obj, *obj_user;
+int contracts_map, contracts_user_map;
 struct xsknfv_config config;
 
+unsigned nrules;
 pthread_t refill_thread;
 
 
@@ -53,17 +54,19 @@ struct khashmap contracts;
 struct contract_entry *entries;
 
 void *refill_counter(void *args){
-	struct contract_entry *entry;
-	entry = (struct contract_entry *)args;
-	int ret;
+	struct contract_entry *entries;
+	entries = (struct contract_entry *)args;
+	int ret,i;
     while(1){
-		entry->contract.counter = entry->contract.rate * entry->contract.window_size;
-		ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
-		printf("Updating counter..\n");
+		for(i=0; i < nrules; i++){
+			entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size;
+			ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
+			ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 			if (ret) {
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
 			}
-		usleep(entry->contract.window_size);
+		}
+		usleep(1000000);
     }
     pthread_exit(0);
 }
@@ -82,9 +85,10 @@ static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contr
 
 int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 {
-
 	void *pkt_end = pkt + len;
 	struct session_id key;
+	struct contract contract;
+	int ret;
 
 	struct ethhdr *eth = pkt;
 	if ((void *)(eth + 1) > pkt_end) {
@@ -124,18 +128,20 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 	key.proto = iph->protocol;
 
 
-struct contract *contract = khashmap_lookup_elem(&contracts, &key);
-if (!contract) {
-	return -1;
-  }
+	ret = bpf_map_lookup_elem(contracts_user_map, &key, &contract);
 
-  switch (contract->action) {
+	if (ret) {
+		printf("No contract..\n");
+		return -1;
+	}
+
+  switch (contract.action) {
     case ACTION_PASS:
       return 0;
       break;
 
     case ACTION_LIMIT:
-    	return limit_rate(pkt, len, contract);
+    	return limit_rate(pkt, len, &contract);
       break;
 
     case ACTION_DROP:
@@ -154,7 +160,6 @@ static void init_contracts(const char *conctracts_path)
 	FILE *f = fopen(conctracts_path, "r");
 	struct in_addr addr;
 	struct contract_entry *entry;
-	unsigned nrules;
 	int i, ret;
 
 	printf("Loading the contracts...\n");
@@ -202,7 +207,7 @@ static void init_contracts(const char *conctracts_path)
 		entry->contract.local = local;
         entry->contract.rate = rate;
         entry->contract.window_size = window_size;
-        entry->contract.counter = rate * window_size;
+        entry->contract.counter = 0;						// initially empty
 
         printf("rate: %lu\n",  entry->contract.rate );
         printf("coutner %lu\n", entry->contract.counter);
@@ -225,6 +230,26 @@ static void init_contracts(const char *conctracts_path)
 				exit(EXIT_FAILURE);
 			}
 		}
+		if(config.working_mode & MODE_AF_XDP){
+			printf("Enter\n");
+			struct bpf_map *map;
+
+			map = bpf_object__find_map_by_name(obj, "contracts_user");
+			contracts_user_map = bpf_map__fd(map);
+			printf("Ok maps\n");
+
+			if (contracts_user_map < 0) {
+				fprintf(stderr, "ERROR: no contracts map found: %s\n",
+					strerror(contracts_map));
+				exit(EXIT_FAILURE);
+			}
+			ret = bpf_map_update_elem(contracts_user_map, &entry->key, &entry->contract, BPF_ANY);
+			if (ret) {
+				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
+				exit(EXIT_FAILURE);
+			}
+		}
+		printf("Exit\n");
 	}
 
 	if (i != nrules) {
@@ -233,18 +258,18 @@ static void init_contracts(const char *conctracts_path)
 	}
 	
 
-	if (config.working_mode & MODE_AF_XDP) {
-		khashmap_init(&contracts, sizeof(struct session_id), sizeof(struct contract), MAX_CONTRACTS);
-		// my_hashmap__init(&acl, nrules, sizeof(struct session_id), sizeof(int));
-		for(int i = 0; i < nrules; i++){
-			if(khashmap_update_elem(&contracts, &entries[i].key,
-					&entries[i].contract, 0)){
-				fprintf(stderr, "Error adding elemetn to hash map\n");
-				exit(EXIT_FAILURE);
-			}
-		}
-	}
-    pthread_create(&refill_thread, NULL, refill_counter, entry);
+	// if (config.working_mode & MODE_AF_XDP) {
+	// 	khashmap_init(&contracts, sizeof(struct session_id), sizeof(struct contract), MAX_CONTRACTS);
+	// 	// my_hashmap__init(&acl, nrules, sizeof(struct session_id), sizeof(int));
+	// 	for(int i = 0; i < nrules; i++){
+	// 		if(khashmap_update_elem(&contracts, &entries[i].key,
+	// 				&entries[i].contract, 0)){
+	// 			fprintf(stderr, "Error adding elemetn to hash map\n");
+	// 			exit(EXIT_FAILURE);
+	// 		}
+	// 	}
+	// }
+    pthread_create(&refill_thread, NULL, refill_counter, entries);
 	printf("Contract loaded..\n");
     return;
 }
