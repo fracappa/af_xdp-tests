@@ -49,8 +49,14 @@ struct {
 static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
+
+	const char fmt_str[] = "size: %lu\n";
+
   
-     int size = (data_end - data) * 8;
+     uint64_t size = (data_end - data) * 8;
+
+	  bpf_trace_printk(fmt_str, sizeof(fmt_str), size);
+
   
      if (contract->counter < size) {
         return XDP_DROP;
@@ -67,9 +73,6 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
   struct session_id key = {0};
-
-const char fmt_str[] = "counter: %d\n";
-
   
   int zero = 0;
 
@@ -129,8 +132,6 @@ const char fmt_str[] = "counter: %d\n";
 		bpf_printk("No value retrieved.\n");
 		return XDP_DROP;
 	}
-
- bpf_trace_printk(fmt_str, sizeof(fmt_str), contract->counter);
 
 
 // /* What should be redirected to AF_XDP: remote traffic */

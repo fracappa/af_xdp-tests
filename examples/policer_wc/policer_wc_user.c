@@ -38,6 +38,7 @@ struct xsknfv_config config;
 
 unsigned nrules;
 pthread_t refill_thread;
+pthread_spinlock_t lock;
 
 
 #define IP_STRLEN 16
@@ -59,9 +60,11 @@ void *refill_counter(void *args){
 	int ret,i;
     while(1){
 		for(i=0; i < nrules; i++){
+			// pthread_spin_lock(&lock);
 			entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size;
+			// pthread_spin_unlock(&lock);
 			ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
-			ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
+			// ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 			if (ret) {
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
 			}
@@ -74,7 +77,8 @@ void *refill_counter(void *args){
 
 static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
 	void *pkt_end = pkt + len;
-    int size = len*8;
+    uint64_t size = (pkt_end - pkt) * 8;
+
     if(contract->counter < size){
         return -1;
     }
@@ -128,7 +132,10 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 	key.proto = iph->protocol;
 
 
-	ret = bpf_map_lookup_elem(contracts_user_map, &key, &contract);
+	// ret = bpf_map_lookup_elem(contracts_user_map, &key, &contract);
+
+	ret = bpf_map_lookup_elem(contracts_map, &key, &contract);
+
 
 	if (ret) {
 		printf("No contract..\n");
@@ -209,12 +216,10 @@ static void init_contracts(const char *conctracts_path)
         entry->contract.window_size = window_size;
         entry->contract.counter = 0;						// initially empty
 
-        printf("rate: %lu\n",  entry->contract.rate );
-        printf("coutner %lu\n", entry->contract.counter);
-
+    
 		i++;
 
-		if (config.working_mode & MODE_XDP) {
+		// if (config.working_mode & MODE_XDP) {
 			struct bpf_map *map;
 
 			map = bpf_object__find_map_by_name(obj, "contracts");
@@ -229,27 +234,24 @@ static void init_contracts(const char *conctracts_path)
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
 				exit(EXIT_FAILURE);
 			}
-		}
-		if(config.working_mode & MODE_AF_XDP){
-			printf("Enter\n");
-			struct bpf_map *map;
+		// }
+		// if(config.working_mode & MODE_AF_XDP){
+			// struct bpf_map *map_user;
 
-			map = bpf_object__find_map_by_name(obj, "contracts_user");
-			contracts_user_map = bpf_map__fd(map);
-			printf("Ok maps\n");
+			// map_user = bpf_object__find_map_by_name(obj_user, "contracts_user");
+			// contracts_user_map = bpf_map__fd(map_user);
 
-			if (contracts_user_map < 0) {
-				fprintf(stderr, "ERROR: no contracts map found: %s\n",
-					strerror(contracts_map));
-				exit(EXIT_FAILURE);
-			}
-			ret = bpf_map_update_elem(contracts_user_map, &entry->key, &entry->contract, BPF_ANY);
-			if (ret) {
-				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-				exit(EXIT_FAILURE);
-			}
-		}
-		printf("Exit\n");
+			// if (contracts_user_map < 0) {
+			// 	fprintf(stderr, "ERROR: no contracts map found: %s\n",
+			// 		strerror(contracts_map));
+			// 	exit(EXIT_FAILURE);
+			// }
+			// ret = bpf_map_update_elem(contracts_user_map, &entry->key, &entry->contract, BPF_ANY);
+			// if (ret) {
+			// 	fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
+			// 	exit(EXIT_FAILURE);
+			// }
+		// }
 	}
 
 	if (i != nrules) {
