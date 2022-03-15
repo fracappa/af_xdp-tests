@@ -42,12 +42,6 @@ pthread_t refill_thread;
 #define IP_STRLEN 16
 #define PROTO_STRLEN 4
 
-// struct contract {
-//   int8_t action;
-//   int8_t local;
-//   struct bucket bucket;
-//   pthread_spinlock_t lock;
-// };
 
 struct contract_entry{
 	struct session_id key;
@@ -56,82 +50,27 @@ struct contract_entry{
 };
 
 struct khashmap contracts;
-//struct khashmap clock_hashmap;
 struct contract_entry *entries;
 
 void *refill_counter(void *args){
 	struct contract_entry *entry;
 	entry = (struct contract_entry *)args;
 	int ret;
-    // struct contract_entry *entry;
-	// entry = (struct contract_entry *)args;
-	// struct session_id key = entry->key;
-	// struct contract contract = entry->contract;
-	// int ret, err;
-	// uint64_t rate = entry->contract.rate;
-	// uint64_t window_size = entry->contract.window_size;
-	// uint64_t amount;
-
-
     while(1){
-		// amount = rate * window_size;
-		// // __sync_fetch_and_add(contract.counter, amount);
-		// contract.counter = amount;
-		//printf("counter ->_> %lu\n", entry->contract.counter);
-
-		entry->contract.counter = entry->contract.rate;
-
+		entry->contract.counter = entry->contract.rate * entry->contract.window_size;
 		ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
+		printf("Updating counter..\n");
 			if (ret) {
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
 			}
-		usleep(1);
+		usleep(entry->contract.window_size);
     }
     pthread_exit(0);
 }
 
-// void *update_clock(void * args){
-// 	struct bpf_map *map;
-// 	int zero = 0, clock_map, ret; 
-// 	uint64_t msec = 0;
-// 	khashmap_init(&clock_hashmap, sizeof(int), sizeof(uint64_t), 1);
-
-// 	while(true){
-// 		msec++;
-// 		if(config.working_mode & MODE_XDP){
-// 			map = bpf_object__find_map_by_name(obj, "clock");
-// 			clock_map = bpf_map__fd(map);
-
-// 			if (clock_map < 0) {
-// 				fprintf(stderr, "ERROR: no clock map found: %s\n",
-// 					strerror(clock_map));
-// 				exit(EXIT_FAILURE);
-// 			}
-// 			ret = bpf_map_update_elem(clock_map, &zero, &msec, BPF_ANY);
-
-// 			if (ret) {
-// 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-// 				exit(EXIT_FAILURE);
-// 			}
-// 		}
-// 		if(config.working_mode & AF_XDP){
-// 				if((khashmap_update_elem(&clock_hashmap, &zero,
-// 					&msec, 0))){
-// 						fprintf(stderr,"ERROR: AF_XDP update time.\n");
-// 						exit(EXIT_FAILURE);
-// 					}
-// 		}
-// 		printf("Updating clock (%lu) ...\n", msec);
-// 		usleep(1000);
-// 	}
-// 	exit(0);
-// }
 
 static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
 	void *pkt_end = pkt + len;
-	//int zero = 0;
-	// clock_t now = clock();
-	// now/= 1000;
     int size = len*8;
     if(contract->counter < size){
         return -1;
@@ -263,7 +202,7 @@ static void init_contracts(const char *conctracts_path)
 		entry->contract.local = local;
         entry->contract.rate = rate;
         entry->contract.window_size = window_size;
-        entry->contract.counter = rate;
+        entry->contract.counter = rate * window_size;
 
         printf("rate: %lu\n",  entry->contract.rate );
         printf("coutner %lu\n", entry->contract.counter);
