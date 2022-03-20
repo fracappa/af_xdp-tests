@@ -178,15 +178,15 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
 
 	if (!contract) {
-		bpf_printk("No value retrieved.\n");
-		return XDP_DROP;
+		bpf_printk("Redirecting to AF_XDP..\n");
+	  	return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 
 // /* What should be redirected to AF_XDP: remote traffic */
-  if(contract->local == 0){
-	  bpf_printk("Redirecting to AF_XDP..\n");
-	  return bpf_redirect_map(&xsks, index, XDP_DROP);
-  }
+//   if(contract->local == 0){
+// 	  bpf_printk("Redirecting to AF_XDP..\n");
+// 	  return bpf_redirect_map(&xsks, index, XDP_DROP);
+//   }
 
 
   //Apply action

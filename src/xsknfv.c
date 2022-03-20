@@ -535,7 +535,7 @@ static void l2fwd(struct xsk_socket_info *xsks, unsigned ifindex)
 			ret = xsk_ring_prod__reserve(&tx_xsk->tx, ntx, &idx_tx);
 		}
 
-		for (i = 0; i < rcvd; i++) {
+		for (i = 0; i < ntx; i++) {
 			xsk_ring_prod__tx_desc(&tx_xsk->tx, idx_tx)->addr = to_tx[i].addr;
 			xsk_ring_prod__tx_desc(&tx_xsk->tx, idx_tx++)->len = to_tx[i].len;
 		}

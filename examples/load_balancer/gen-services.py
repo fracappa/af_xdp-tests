@@ -28,4 +28,4 @@ with open('services.txt', 'w') as services:
       bkd_second = backend >> 8 & 0xff
       bkd_third = backend >> 16 & 0xff
 
-      services.write(f'172.{srv_third}.{srv_second}.{srv_first} 80 UDP 192.{bkd_third}.{bkd_second}.{bkd_first} {backend % 0xffff} 11:22:33:44:55:66 ens1f0\n')
+      services.write(f'172.{srv_third}.{srv_second}.{srv_first} 80 UDP 192.{bkd_third}.{bkd_second}.{bkd_first} {backend % 0xffff} 11:22:33:44:55:66 enp1s0f0\n')

@@ -50,17 +50,11 @@ static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, str
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
-	const char fmt_str[] = "size: %lu\n";
-
-  
-     uint64_t size = (data_end - data) * 8;
-
-	  bpf_trace_printk(fmt_str, sizeof(fmt_str), size);
-
-  
-     if (contract->counter < size) {
-        return XDP_DROP;
-     }
+	uint64_t size = (data_end - data) * 8;
+	 
+	if (contract->counter < size) {
+		return XDP_DROP;
+	}
 
     __sync_fetch_and_add(&contract->counter, -size);
   
@@ -69,6 +63,7 @@ static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, str
 
 SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
   // bpf_printk("Entering XDP program..\n");
+  	// return bpf_redirect_map(&xsks, 0, XDP_DROP);
   int index = ctx->rx_queue_index;
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
@@ -81,6 +76,10 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 		return XDP_ABORTED;
 	}
 	stats->rx_npkts++;
+	// redirect 4/5 of traffic to AF_XDP
+	if(stats->rx_npkts%5 != 0){
+		return bpf_redirect_map(&xsks, index, XDP_DROP);
+	}
 
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end) {
@@ -128,17 +127,17 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 
 	struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
 
+
 	if (!contract) {
-		bpf_printk("No value retrieved.\n");
 		return XDP_DROP;
 	}
 
 
-// /* What should be redirected to AF_XDP: remote traffic */
-  if(contract->local == 0){
-	  bpf_printk("Redirecting to AF_XDP..\n");
-	  return bpf_redirect_map(&xsks, index, XDP_DROP);
-  }
+	 /* What should be redirected to AF_XDP: remote traffic */
+	// if(contract->local == 0){
+	// 	bpf_printk("Redirecting to AF_XDP..\n");
+	// 	return bpf_redirect_map(&xsks, index, XDP_DROP);
+	// }
 
 
   //Apply action

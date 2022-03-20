@@ -14,7 +14,7 @@ struct contract{
     int8_t local;
     int64_t rate;
     int64_t window_size;
-    int64_t counter;
+    uint64_t counter;
 };
 
 struct session_id {
