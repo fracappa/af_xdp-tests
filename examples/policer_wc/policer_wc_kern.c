@@ -11,6 +11,8 @@
 #include <bpf/bpf_helpers.h>
 
 
+int trial = 0;
+
 struct xdp_cpu_stats {
 	unsigned long rx_npkts;
 	unsigned long tx_npkts;
@@ -63,7 +65,7 @@ static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, str
 
 SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
   // bpf_printk("Entering XDP program..\n");
-  	// return bpf_redirect_map(&xsks, 0, XDP_DROP);
+  	return bpf_redirect_map(&xsks, 0, XDP_DROP);
   int index = ctx->rx_queue_index;
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
@@ -77,9 +79,13 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	}
 	stats->rx_npkts++;
 	// redirect 4/5 of traffic to AF_XDP
-	if(stats->rx_npkts%5 != 0){
+	if(stats->rx_npkts%10000 != 0){
+		bpf_printk("AF_XDP...\n");
 		return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
+
+	bpf_printk("Processing in XDP...\n");
+
 
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end) {

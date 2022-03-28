@@ -36,6 +36,8 @@ struct bpf_object *obj;
 struct xsknfv_config config;
 
 pthread_t clock_thread;
+unsigned nrules;
+
 
 
 #define IP_STRLEN 16
@@ -56,6 +58,49 @@ struct contract_entry{
 struct khashmap contracts;
 //struct khashmap clock_hashmap;
 struct contract_entry *entries;
+uint64_t secs_clock = 0;
+int contracts_map;
+
+pthread_t refill_thread;
+
+
+void *periodic_lookup(void *args){
+	struct contract_entry *entries;
+	entries = (struct contract_entry *)args;
+	int ret,i;
+
+	struct timespec time;
+	uint64_t last_check;						/* check eBPF map counter */
+	struct session_id key;
+	struct contract contract;
+
+	printf("nrules: %d\n", nrules);
+    while(1){
+		for(i=0; i < nrules; i++){
+			if(entries[i].contract.local == 0){
+				clock_gettime(CLOCK_MONOTONIC_RAW, &time);
+				last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
+				
+				printf("timer: %ld\n", time.tv_sec);
+
+				printf("||Tokens: %lu\n", entries[i].contract.bucket.tokens);
+				if(last_check > (secs_clock + 1)){
+					printf("reading eBPF map in userspace..\n");
+					ret = bpf_map_lookup_elem(contracts_map, &entries[i].key, &entries[i].contract);
+					khashmap_update_elem(&contracts, &entries[i].key, &entries[i].contract, 0);
+					printf("Tokens: %lu\n", entries[i].contract.bucket.tokens);
+					secs_clock = last_check;
+				}
+			// 	// ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
+			}
+			if (ret) {
+				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
+			}
+		}
+		sleep(1);
+    }
+    pthread_exit(0);
+}
 
 // void *update_clock(void * args){
 // 	struct bpf_map *map;
@@ -94,7 +139,7 @@ struct contract_entry *entries;
 // 	exit(0);
 // }
 
-static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
+static inline unsigned limit_rate(void *pkt,unsigned len, struct session_id *key, struct contract *contract){
 	void *pkt_end = pkt + len;
 	//int zero = 0;
 	// clock_t now = clock();
@@ -121,7 +166,9 @@ static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contr
 				new_tokens = contract->bucket.capacity - contract->bucket.tokens;
 			}
 
-		__sync_fetch_and_add(&contract->bucket.tokens, new_tokens);
+		//__sync_fetch_and_add(&contract->bucket.tokens, new_tokens);
+		contract->bucket.tokens += new_tokens;
+		khashmap_update_elem(&contracts, key, contract, 0);
 		contract->bucket.last_refill = now;
 		// printf("Last refill: %lu\n", contract->bucket.last_refill);
 		//pthread_spin_unlock(&contract->lock);
@@ -133,7 +180,9 @@ static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contr
   int8_t retval;
 
   if (contract->bucket.tokens >= needed_tokens) {
-    __sync_fetch_and_add(&contract->bucket.tokens, -needed_tokens);
+    //__sync_fetch_and_add(&contract->bucket.tokens, -needed_tokens);
+	contract->bucket.tokens -= needed_tokens;
+	khashmap_update_elem(&contracts, key, contract, 0);
     retval = 0;
   } else {
 	 // printf("Not enough tokens..\n");
@@ -212,7 +261,7 @@ if (!contract) {
       break;
 
     case ACTION_LIMIT:
-    	return limit_rate(pkt, len, contract);
+    	return limit_rate(pkt, len, &key, contract);
       break;
 
     case ACTION_DROP:
@@ -229,10 +278,13 @@ static void init_contracts(const char *conctracts_path)
 	unsigned action, local;
 	uint64_t refill_rate, capacity;
 	FILE *f = fopen(conctracts_path, "r");
+	struct timespec time;
 	struct in_addr addr;
 	struct contract_entry *entry;
-	unsigned nrules;
+	uint64_t start, now;
 	int i, ret;
+
+	start =time.tv_sec * 1000 + time.tv_nsec/1000000;
 
 	printf("Loading the contracts...\n");
 	if (f == NULL) {
@@ -277,17 +329,20 @@ static void init_contracts(const char *conctracts_path)
 		/* initialize contract attributes associated to the session key */
 		entry->contract.action = action;
 		entry->contract.local = local;
-		entry->contract.bucket.tokens = 0;
 		entry->contract.bucket.last_refill = 0;
 		entry->contract.bucket.refill_rate = refill_rate;
 		entry->contract.bucket.capacity = capacity;
+		entry->contract.bucket.tokens = 0;
+		// clock_gettime(CLOCK_MONOTONIC_RAW, &time);
+		// now =time.tv_sec * 1000 + time.tv_nsec/1000000;
+		// entry->contract.bucket.tokens = (now/1000000)*refill_rate;
 		pthread_spin_init(&entry->contract.lock, 0);
 
 		i++;
 
 		if (config.working_mode & MODE_XDP) {
 			struct bpf_map *map;
-			int i, contracts_map;
+			int i;
 
 			map = bpf_object__find_map_by_name(obj, "contracts");
 			contracts_map = bpf_map__fd(map);
@@ -321,6 +376,7 @@ static void init_contracts(const char *conctracts_path)
 			}
 		}
 	}
+	pthread_create(&refill_thread, NULL, periodic_lookup, entries);
 	printf("Contract loaded..\n");
     return;
 }

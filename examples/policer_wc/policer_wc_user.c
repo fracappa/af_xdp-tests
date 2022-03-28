@@ -70,26 +70,27 @@ void *refill_counter(void *args){
 		for(i=0; i < nrules; i++){
 			if(entries[i].contract.local == 0){
 
-			// 	clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-			// 	last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
+				clock_gettime(CLOCK_MONOTONIC_RAW, &time);
+				last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
 				
-			// 	printf("timer: %ld\n", time.tv_sec);
+				printf("timer: %ld\n", time.tv_sec);
 
-			// 	if(last_check > (secs_clock + 10)){
-			// 		printf("reading eBPF map in userspace..\n");
-			// 		ret = bpf_map_lookup_elem(contracts_map, &entries[i].key, &entries[i].contract);
-			// 		khashmap_update_elem(&contracts,&entries[i].key, &entries[i].contract, 0);
-			// 		secs_clock = last_check;
-			// 	}else{
+				if(last_check > (secs_clock + 5)){
+					printf("reading eBPF map in userspace..\n");
+					ret = bpf_map_lookup_elem(contracts_map, &entries[i].key, &entries[i].contract);
+					khashmap_update_elem(&contracts,&entries[i].key, &entries[i].contract, 0);
+					secs_clock = last_check;
+				}else{
 					entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size *1000;
 					khashmap_update_elem(&contracts,  &entries[i].key, &entries[i].contract, 0);
-			// 	}
+				}
 			// 	// ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 			}
-			// else{
-			// 	entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size *1000;
-			// 	ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
-			// }
+			else{
+				entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size *1000;
+				printf("Updating eBPF map..\n");
+				ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
+			}
 			if (ret) {
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
 			}
@@ -251,7 +252,7 @@ static void init_contracts(const char *conctracts_path)
 		entry->contract.local = local;
         entry->contract.rate = rate;
         entry->contract.window_size = window_size;
-        entry->contract.counter = rate * window_size;						// initially empty
+        entry->contract.counter = rate * window_size * 1000;
 
 
 		i++;

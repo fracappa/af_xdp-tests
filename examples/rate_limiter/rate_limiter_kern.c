@@ -103,7 +103,7 @@ static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, str
 
 SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
   // bpf_printk("Entering XDP program..\n");
-  int index = ctx->rx_queue_index;
+//   int index = ctx->rx_queue_index;
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
   struct session_id key = {0};
@@ -120,10 +120,10 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	 * work in combined mode.
 	 * In pure XDP the redirect will fail and the packet will be dropped.
 	 */
-	// if (stats->rx_npkts %2 == 0){
-    // 	bpf_printk("Redirecting to AF_XDP...\n");
-	// 	return bpf_redirect_map(&xsks, 0, XDP_DROP);
-	// }
+	if (stats->rx_npkts%1000 != 0){
+    	bpf_printk("Redirecting to AF_XDP...\n");
+		return bpf_redirect_map(&xsks, 0, XDP_DROP);
+	}
 	
 
 	struct ethhdr *eth = data;
@@ -178,8 +178,9 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
 
 	if (!contract) {
-		bpf_printk("Redirecting to AF_XDP..\n");
-	  	return bpf_redirect_map(&xsks, index, XDP_DROP);
+		return XDP_DROP;
+		// bpf_printk("Redirecting to AF_XDP..\n");
+	  	// return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 
 // /* What should be redirected to AF_XDP: remote traffic */
