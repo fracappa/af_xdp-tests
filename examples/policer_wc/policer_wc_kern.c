@@ -11,8 +11,6 @@
 #include <bpf/bpf_helpers.h>
 
 
-int trial = 0;
-
 struct xdp_cpu_stats {
 	unsigned long rx_npkts;
 	unsigned long tx_npkts;
@@ -33,134 +31,146 @@ struct {
 } xsks SEC(".maps");
 
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct session_id);
-	__type(value, struct contract);
-	__uint(max_entries, MAX_CONTRACTS);
-} contracts SEC(".maps");
+// struct {
+// 	__uint(type, BPF_MAP_TYPE_HASH);
+// 	__type(key, struct session_id);
+// 	__type(value, struct contract);
+// 	__uint(max_entries, MAX_CONTRACTS);
+// } contracts SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct session_id);
-	__type(value, struct contract);
-	__uint(max_entries, MAX_CONTRACTS);
-} contracts_user SEC(".maps");
+// struct {
+// 	__uint(type, BPF_MAP_TYPE_HASH);
+// 	__type(key, struct session_id);
+// 	__type(value, struct contract);
+// 	__uint(max_entries, MAX_CONTRACTS);
+// } contracts_user SEC(".maps");
 
+// struct session_id keys[MAX_CONTRACTS];
+// struct contract contracts[MAX_CONTRACTS];
 
-static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+struct policy policies[MAX_CONTRACTS] = {};
 
-	uint64_t size = (data_end - data) * 8;
+// static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
+//     void *data = (void *)(long)ctx->data;
+//     void *data_end = (void *)(long)ctx->data_end;
+
+// 	uint64_t size = (data_end - data) * 8;
 	 
-	if (contract->counter < size) {
-		return XDP_DROP;
-	}
+// 	if (contract->counter < size) {
+// 		return XDP_DROP;
+// 	}
 
-    __sync_fetch_and_add(&contract->counter, -size);
+//     __sync_fetch_and_add(&contract->counter, -size);
   
-     return XDP_TX;
-}
+//      return XDP_TX;
+// }
 
 SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
   // bpf_printk("Entering XDP program..\n");
   	return bpf_redirect_map(&xsks, 0, XDP_DROP);
-  int index = ctx->rx_queue_index;
-  void *data = (void *)(long)ctx->data;
-  void *data_end = (void *)(long)ctx->data_end;
-  struct session_id key = {0};
+//   int index = ctx->rx_queue_index;
+//   void *data = (void *)(long)ctx->data;
+//   void *data_end = (void *)(long)ctx->data_end;
+//   struct session_id key = {0};
   
-  int zero = 0;
+//   int zero = 0;
+//   int i;
 
- struct xdp_cpu_stats *stats = bpf_map_lookup_elem(&xdp_stats, &zero);
-	if (!stats) {
-		return XDP_ABORTED;
-	}
-	stats->rx_npkts++;
-	// redirect 4/5 of traffic to AF_XDP
-	if(stats->rx_npkts%10000 != 0){
-		bpf_printk("AF_XDP...\n");
-		return bpf_redirect_map(&xsks, index, XDP_DROP);
-	}
+//  struct xdp_cpu_stats *stats = bpf_map_lookup_elem(&xdp_stats, &zero);
+// 	if (!stats) {
+// 		return XDP_ABORTED;
+// 	}
+// 	stats->rx_npkts++;
+// 	// redirect 4/5 of traffic to AF_XDP
+// 	if(stats->rx_npkts%100000 != 0){
+// 		bpf_printk("AF_XDP...\n");
+// 		return bpf_redirect_map(&xsks, index, XDP_DROP);
+// 	}
 
-	bpf_printk("Processing in XDP...\n");
-
-
-	struct ethhdr *eth = data;
-	if ((void *)(eth + 1) > data_end) {
-		return XDP_ABORTED;
-	}
-
-  if (eth->h_proto != htons(ETH_P_IP)) {
-		return XDP_TX;
-	}
-
-	struct iphdr *iph = (void *)(eth + 1);
-	if ((void *)(iph + 1) > data_end) {
-		return XDP_ABORTED;
-	}
-
-	void *next = (void *)iph + (iph->ihl << 2);
-
-	switch (iph->protocol) {
-	case IPPROTO_TCP:;
-		struct tcphdr *tcph = next;
-		if ((void *)(tcph + 1) > data_end) {
-			return XDP_ABORTED;
-		}
-
-		key.sport = tcph->source;
-		key.dport = tcph->dest;
-
-		break;
-
-	case IPPROTO_UDP:;
-		struct udphdr *udph = next;
-		if ((void *)(udph + 1) > data_end) {
-			return XDP_ABORTED;
-		}
-
-		key.sport = udph->source;
-		key.dport = udph->dest;
-
-		break;
-	}
-
-	key.saddr = iph->saddr;
-	key.daddr = iph->daddr;
-	key.proto = iph->protocol;
-
-	struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
+// 	bpf_printk("Processing in XDP...\n");
 
 
-	if (!contract) {
-		return XDP_DROP;
-	}
+// 	struct ethhdr *eth = data;
+// 	if ((void *)(eth + 1) > data_end) {
+// 		return XDP_ABORTED;
+// 	}
+
+//   if (eth->h_proto != htons(ETH_P_IP)) {
+// 		return XDP_TX;
+// 	}
+
+// 	struct iphdr *iph = (void *)(eth + 1);
+// 	if ((void *)(iph + 1) > data_end) {
+// 		return XDP_ABORTED;
+// 	}
+
+// 	void *next = (void *)iph + (iph->ihl << 2);
+
+// 	switch (iph->protocol) {
+// 	case IPPROTO_TCP:;
+// 		struct tcphdr *tcph = next;
+// 		if ((void *)(tcph + 1) > data_end) {
+// 			return XDP_ABORTED;
+// 		}
+
+// 		key.sport = tcph->source;
+// 		key.dport = tcph->dest;
+
+// 		break;
+
+// 	case IPPROTO_UDP:;
+// 		struct udphdr *udph = next;
+// 		if ((void *)(udph + 1) > data_end) {
+// 			return XDP_ABORTED;
+// 		}
+
+// 		key.sport = udph->source;
+// 		key.dport = udph->dest;
+
+// 		break;
+// 	}
+
+// 	key.saddr = iph->saddr;
+// 	key.daddr = iph->daddr;
+// 	key.proto = iph->protocol;
+
+// 	// struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
+
+// 	struct contract *contract;
+// 	for(i=0; i < MAX_CONTRACTS; i++){
+// 		if(policies[i].key == (jhash(&key, 256, 0))){
+// 			contract = &policies[i].contract;
+// 			break;
+// 		}
+// 	}
+
+// 	if (!contract) {
+// 		return XDP_DROP;
+// 	}
 
 
-	 /* What should be redirected to AF_XDP: remote traffic */
-	// if(contract->local == 0){
-	// 	bpf_printk("Redirecting to AF_XDP..\n");
-	// 	return bpf_redirect_map(&xsks, index, XDP_DROP);
-	// }
+// 	 /* What should be redirected to AF_XDP: remote traffic */
+// 	// if(contract->local == 0){
+// 	// 	bpf_printk("Redirecting to AF_XDP..\n");
+// 	// 	return bpf_redirect_map(&xsks, index, XDP_DROP);
+// 	// }
 
 
-  //Apply action
-  switch (contract->action) {
-    case ACTION_PASS:
-      return XDP_PASS;
-      break;
+//   //Apply action
+//   switch (contract->action) {
+//     case ACTION_PASS:
+//       return XDP_PASS;
+//       break;
 
-    case ACTION_LIMIT:
-      return limit_rate(ctx, &key, contract);
-      break;
+//     case ACTION_LIMIT:
+//       return limit_rate(ctx, &key, contract);
+//       break;
 
-    case ACTION_DROP:
-      return XDP_DROP;
-      break;
-  }
-  return XDP_TX;
+//     case ACTION_DROP:
+//       return XDP_DROP;
+//       break;
+//   }
+//   return XDP_TX;
 }
 
 char _license[] SEC("license") = "GPL";
