@@ -55,6 +55,9 @@ static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, str
     void *data_end = (void *)(long)ctx->data_end;
 
 	uint64_t size = (data_end - data) * 8;
+
+	bpf_printk("Processing in XDP...\n");
+
 	 
 	if (contract->counter < size) {
 		return XDP_DROP;
@@ -83,11 +86,9 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	stats->rx_npkts++;
 	// redirect 4/5 of traffic to AF_XDP
 	if(stats->rx_npkts%100000 != 0){
-		bpf_printk("AF_XDP...\n");
 		return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 
-	bpf_printk("Processing in XDP...\n");
 
 
 	struct ethhdr *eth = data;
@@ -138,13 +139,15 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 
 	struct contract *contract = NULL;
 	for(i=0; i < MAX_CONTRACTS; i++){
-		if(policies[i].key != (jhash(&key, 256, 0))){
+		if(policies[i].key == (jhash(&key, sizeof(struct session_id), 0))){
 			contract = &policies[i].contract;
 			break;
 		}
 	}
 
+
 	if (!contract) {
+		bpf_printk("No contract..\n");
 		return XDP_DROP;
 	}
 

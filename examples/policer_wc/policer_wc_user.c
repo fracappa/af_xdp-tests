@@ -281,15 +281,14 @@ static void init_contracts(const char *conctracts_path)
 
 		if (config.working_mode & MODE_XDP) {
 
-			skel = policer_wc_kern__open_and_load();
-
 		if (!skel) {
 			fprintf(stderr, "Failed to open and load BPF skeleton\n");
 			return;
 		}
 
+			unsigned hash = jhash(&entry->key, sizeof(struct session_id), 0);
 
-			skel->bss->policies[i].key = jhash(&entry->key, sizeof(struct session_id), 0);
+			skel->bss->policies[i].key = hash;
 			printf("Key hash: %u\n", 	skel->bss->policies[i].key);
 			skel->bss->policies[i].contract = entry->contract;
 		// 	struct bpf_map *map;
@@ -408,6 +407,8 @@ int main(int argc, char **argv)
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
 	signal(SIGUSR1, int_usr);
+
+	skel = policer_wc_kern__open_and_load();
 
 
 	xsknfv_init(argc, argv, &config, &obj);
