@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/mman.h>
 
+
 #ifndef SOL_XDP
 #define SOL_XDP 283
 #endif
@@ -786,20 +787,21 @@ int xsknfv_init(int argc, char **argv, struct xsknfv_config *config,
 		}
 	}
 	
-	if (conf.working_mode & MODE_XDP) {
-		sprintf(conf.xdp_filename, "%s_kern.o", argv[0]);
-		printf("Loading custom eBPF programs...\n");
-		load_ebpf_programs(conf.xdp_filename, &obj);
-		*bpf_obj = obj;
+	// if (conf.working_mode & MODE_XDP) {
+	// 	// sprintf(conf.xdp_filename, "%s_kern.o", argv[0]);
+	// 	// printf("Loading custom eBPF programs...\n");
+	// 	// load_ebpf_programs(conf.xdp_filename, &obj);
+	// 	 *bpf_obj = obj;
 
 		if (conf.working_mode & MODE_AF_XDP) {
-			enter_xsks_into_map(obj);
+			enter_xsks_into_map(*bpf_obj);
 		}
 
-		printf("Programs loaded\n");
-	} else {
-		*bpf_obj = NULL;
-	}
+	// 	printf("Programs loaded\n");
+	// } 
+	// else {
+	// 	*bpf_obj = NULL;
+	// }
 
 	memcpy(config, &conf, sizeof(struct xsknfv_config));
 

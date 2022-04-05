@@ -22,6 +22,8 @@
 #include <xsknfv.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/resource.h>
+#include <bpf/libbpf.h>
 #include <sys/sysinfo.h>
 
 #include "policer_wc.skel.h"
@@ -92,12 +94,21 @@ void *refill_counter(void *args){
 				// 	entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size * 1000;
 				// 	//ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 					entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size * 1000;
-				
-					if((skel->bss->policies[i].key = 
-						(jhash(&entries[i].key, sizeof(struct session_id), 0))) != 0){
-						skel->bss->policies[i].contract = entries[i].contract;
-					}
+
+				// if (config.working_mode & MODE_XDP) {
+				// 	if((skel->bss->policies[i].key = 
+				// 		(jhash(&entries[i].key, sizeof(struct session_id), 0))) != 0){
+				// 		skel->bss->policies[i].contract = entries[i].contract;
+				// 		policer_wc_kern__load(skel);
+				// 		policer_wc_kern__attach(skel);
+				// 	}
+				// }
+
+				if (config.working_mode & MODE_AF_XDP) {
 					khashmap_update_elem(&contracts,  &entries[i].key, &entries[i].contract, 0);
+				}
+				
+
 
 					//ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 				//}
@@ -275,17 +286,12 @@ static void init_contracts(const char *conctracts_path)
         entry->contract.rate = rate;
         entry->contract.window_size = window_size;
         entry->contract.counter = rate * window_size * 1000;
+		entry->contract.last_update = 0;
 
 
 		i++;
 
 		if (config.working_mode & MODE_XDP) {
-
-		if (!skel) {
-			fprintf(stderr, "Failed to open and load BPF skeleton\n");
-			return;
-		}
-
 			unsigned hash = jhash(&entry->key, sizeof(struct session_id), 0);
 
 			skel->bss->policies[i].key = hash;
@@ -401,17 +407,53 @@ static void int_usr(int sig)
 	print_stats(&config, obj);
 }
 
+
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+{
+	return vfprintf(stderr, format, args);
+}
+
 int main(int argc, char **argv)
 {
+
+	int err;
+
 	signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
 	signal(SIGUSR1, int_usr);
 
-	skel = policer_wc_kern__open_and_load();
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+	libbpf_set_print(libbpf_print_fn);
 
+	skel = policer_wc_kern__open();
 
-	xsknfv_init(argc, argv, &config, &obj);
+	err = policer_wc_kern__load(skel);
+	if (err) {
+		fprintf(stderr, "Failed to load and verify BPF skeleton\n");
+		return 1;
+	}
+
+	int ifindex = 3;
+	if(!ifindex)
+	{
+		printf("get ifindex from interface name failed\n");
+		return EXIT_FAILURE;
+	}
+	/* load XDP object by libxdp */
+	skel->links.rate_limiter = bpf_program__attach_xdp(skel->progs.rate_limiter, ifindex);
+	if(!skel->links.rate_limiter)
+	{
+		printf("unable to attach xdp program\n");
+		return EXIT_FAILURE;
+	}
+	// policer_wc_kern__attach(skel);
+	// if (err) {
+	// 	fprintf(stderr, "Failed to attach BPF skeleton\n");
+	// 	return 1;
+	// }
+
+	xsknfv_init(argc, argv, &config, &skel->obj);
 
 	parse_command_line(argc, argv, argv[0]);
 
@@ -495,6 +537,8 @@ int main(int argc, char **argv)
 	}
 
 	xsknfv_cleanup();
+	// policer_wc_kern__detach(skel);
+	// policer_wc_kern__destroy(skel);
 
 	return 0;
 }

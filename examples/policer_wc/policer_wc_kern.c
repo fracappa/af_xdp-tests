@@ -53,25 +53,27 @@ struct policy policies[MAX_CONTRACTS] = {};
 static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-
 	uint64_t size = (data_end - data) * 8;
 
-	bpf_printk("Processing in XDP...\n");
+	/* Update the window counter every ms */
+	uint64_t now = bpf_ktime_get_ns();    /* Francesco Cappa: TO BE CHANGED */
+	now /= 1000000;
+
+	if(now > contract->last_update){
+		contract->counter = contract->rate * contract->window_size;
+		contract->last_update = now;
+	}
 
 	 
 	if (contract->counter < size) {
 		return XDP_DROP;
+	}else{
+		__sync_fetch_and_add(&contract->counter, -size);
+		return XDP_TX;
 	}
-
-    __sync_fetch_and_add(&contract->counter, -size);
-  
-     return XDP_TX;
 }
 
 SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
-  // bpf_printk("Entering XDP program..\n");
-  	//return bpf_redirect_map(&xsks, 0, XDP_DROP);
-  int index = ctx->rx_queue_index;
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
   struct session_id key = {0};
@@ -84,10 +86,12 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 		return XDP_ABORTED;
 	}
 	stats->rx_npkts++;
+
+
 	// redirect 4/5 of traffic to AF_XDP
-	if(stats->rx_npkts%100000 != 0){
-		return bpf_redirect_map(&xsks, index, XDP_DROP);
-	}
+	// if(stats->rx_npkts%100000 != 0){
+	// 	return bpf_redirect_map(&xsks, index, XDP_DROP);
+	// }
 
 
 
@@ -135,8 +139,7 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-	// struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
-
+	/* lookup for the contract within the global array */
 	struct contract *contract = NULL;
 	for(i=0; i < MAX_CONTRACTS; i++){
 		if(policies[i].key == (jhash(&key, sizeof(struct session_id), 0))){
@@ -145,19 +148,10 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 		}
 	}
 
-
 	if (!contract) {
 		bpf_printk("No contract..\n");
 		return XDP_DROP;
 	}
-
-
-	 /* What should be redirected to AF_XDP: remote traffic */
-	// if(contract->local == 0){
-	// 	bpf_printk("Redirecting to AF_XDP..\n");
-	// 	return bpf_redirect_map(&xsks, index, XDP_DROP);
-	// }
-
 
   //Apply action
   switch (contract->action) {
