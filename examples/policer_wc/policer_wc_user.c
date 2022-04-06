@@ -68,37 +68,37 @@ void *refill_counter(void *args){
 
     while(1){
 		for(i=0; i < nrules; i++){
-			if(entries[i].contract.local == 0){
 
-				clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-				last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
-				
-				printf("timer: %ld\n", time.tv_sec);
+			clock_gettime(CLOCK_MONOTONIC_RAW, &time);
+			last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
+			
+			entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size;
 
-				if(last_check > (secs_clock + 5)){
-					printf("reading eBPF map in userspace..\n");
+			/* update counter in AF_XDP */
+			if(config.working_mode & MODE_AF_XDP){
+				/* periodic lookup in eBPF map */
+				if(last_check > (secs_clock + 1)){
 					ret = bpf_map_lookup_elem(contracts_map, &entries[i].key, &entries[i].contract);
 					khashmap_update_elem(&contracts,&entries[i].key, &entries[i].contract, 0);
 					secs_clock = last_check;
 				}else{
-					entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size *1000;
 					khashmap_update_elem(&contracts,  &entries[i].key, &entries[i].contract, 0);
 				}
-			// 	// ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 			}
-			else{
-				entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size *1000;
-				printf("Updating eBPF map..\n");
-				ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
-			}
+
+			/* update counter in XDP */
+			if(config.working_mode & MODE_XDP){
+			ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 			if (ret) {
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
 			}
 		}
-		sleep(1);
-    }
-    pthread_exit(0);
+	}
+	usleep(1000);
+	}
+	pthread_exit(0);
 }
+
 
 
 static inline unsigned limit_rate(void *pkt,unsigned len, struct session_id *key, struct contract *contract){
@@ -110,11 +110,8 @@ static inline unsigned limit_rate(void *pkt,unsigned len, struct session_id *key
         return -1;
     }
 
-	/* possible slow operation */
-
 	contract->counter = contract->counter - size;
 	khashmap_update_elem(&contracts, key, contract, 0);
-	// bpf_map_update_elem(contracts_user_map, key, contract, BPF_ANY);
 
     return 0;
 
@@ -124,7 +121,6 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 {	
 	void *pkt_end = pkt + len;
 	struct session_id key;
-	// struct contract contract;
 	int ret;
 
 	struct ethhdr *eth = pkt;
@@ -164,15 +160,7 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-
-	// ret = bpf_map_lookup_elem(contracts_user_map, &key, &contract);
-	//printf("%ld", contract->counter);
-
-	// ret = bpf_map_lookup_elem(contracts_map, &key, &contract);
-
 	struct contract *contract = khashmap_lookup_elem(&contracts, &key);
-
-
 
 	if (ret) {
 		printf("No contract..\n");
@@ -207,12 +195,10 @@ static void init_contracts(const char *conctracts_path)
 	struct contract_entry *entry;
 	int i, ret;
 
-	printf("Loading the contracts...\n");
 	if (f == NULL) {
 		exit_with_error(errno);
 	}
 
-	/* The first line shall contain the number of rules */
 	if(fscanf(f, "%u", &nrules) != 1) {
 		exit_with_error(-1);
 	}
@@ -272,26 +258,7 @@ static void init_contracts(const char *conctracts_path)
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
 				exit(EXIT_FAILURE);
 			}
-			printf("Insert entry in XDP map..\n");
 		}
-		// if(config.working_mode & MODE_AF_XDP && local == 0){
-		// 	struct bpf_map *map_user;
-
-		// 	map_user = bpf_object__find_map_by_name(obj, "contracts_user");
-		// 	contracts_user_map = bpf_map__fd(map_user);
-
-		// 	if (contracts_user_map < 0) {
-		// 		fprintf(stderr, "ERROR: no contracts map found: %s\n",
-		// 			strerror(contracts_map));
-		// 		exit(EXIT_FAILURE);
-		// 	}
-		// 	ret = bpf_map_update_elem(contracts_user_map, &entry->key, &entry->contract, BPF_ANY);
-		// 	if (ret) {
-		// 		fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-		// 		exit(EXIT_FAILURE);
-		// 	}
-		// 	printf("Insert entry in AF_XDP map..\n");
-		// }
 	}
 
 	if (i != nrules) {
@@ -302,7 +269,6 @@ static void init_contracts(const char *conctracts_path)
 
 	if (config.working_mode & MODE_AF_XDP) {
 		khashmap_init(&contracts, sizeof(struct session_id), sizeof(struct contract), MAX_CONTRACTS);
-		// my_hashmap__init(&acl, nrules, sizeof(struct session_id), sizeof(int));
 		for(int i = 0; i < nrules; i++){
 			if(khashmap_update_elem(&contracts, &entries[i].key,
 					&entries[i].contract, 0)){
@@ -398,7 +364,6 @@ int main(int argc, char **argv)
 	while (!benchmark_done) {
 		sleep(1);
 		if (!opt_quiet) {
-			//dump_stats(config, obj, opt_extra_stats, opt_app_stats);
 
 #ifdef MONITOR_LOOKUP_TIME
 			unsigned long rx_npkts = 0;
