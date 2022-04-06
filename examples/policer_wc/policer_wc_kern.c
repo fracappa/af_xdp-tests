@@ -33,19 +33,21 @@ struct {
 } xsks SEC(".maps");
 
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct session_id);
-	__type(value, struct contract);
-	__uint(max_entries, MAX_CONTRACTS);
-} contracts SEC(".maps");
+// struct {
+// 	__uint(type, BPF_MAP_TYPE_HASH);
+// 	__type(key, struct session_id);
+// 	__type(value, struct contract);
+// 	__uint(max_entries, MAX_CONTRACTS);
+// } contracts SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct session_id);
-	__type(value, struct contract);
-	__uint(max_entries, MAX_CONTRACTS);
-} contracts_user SEC(".maps");
+// struct {
+// 	__uint(type, BPF_MAP_TYPE_HASH);
+// 	__type(key, struct session_id);
+// 	__type(value, struct contract);
+// 	__uint(max_entries, MAX_CONTRACTS);
+// } contracts_user SEC(".maps");
+
+struct contract contracts[MAX_CONTRACTS] = {};
 
 
 static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
@@ -53,6 +55,9 @@ static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, str
     void *data_end = (void *)(long)ctx->data_end;
 
 	uint64_t size = (data_end - data) * 8;
+
+	  bpf_printk("Applying limit..\n");
+
 	 
 	if (contract->counter < size) {
 		return XDP_DROP;
@@ -72,13 +77,13 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
   int zero = 0;
 
  struct xdp_cpu_stats *stats = bpf_map_lookup_elem(&xdp_stats, &zero);
-	if (!stats) {
-		return XDP_ABORTED;
-	}
+if (!stats) {
+	return XDP_ABORTED;
+}
 	stats->rx_npkts++;
 
 	// redirect most of traffic to AF_XDP
-	if(stats->rx_npkts%10000 != 0){
+	if(stats->rx_npkts%10 != 0){
 		return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 
@@ -126,10 +131,12 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-	struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
-
+	//struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
+	//unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+	struct contract *contract = &contracts[8];
 
 	if (!contract) {
+		bpf_printk("No contracts..\n");
 		return XDP_DROP;
 	}
 

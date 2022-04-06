@@ -5,6 +5,7 @@
 #include "../common/statistics.h"
 
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
@@ -24,6 +25,8 @@
 #include <pthread.h>
 #include <sys/sysinfo.h>
 
+#include "policer_wc.skel.h"
+
 static int benchmark_done;
 static int opt_quiet;
 static int opt_extra_stats;
@@ -37,9 +40,10 @@ struct bpf_object *obj;
 int contracts_map, contracts_user_map;
 struct xsknfv_config config;
 
+struct policer_wc_kern *skeleton;
+
 unsigned nrules;
 pthread_t refill_thread;
-pthread_spinlock_t lock;
 
 
 #define IP_STRLEN 16
@@ -73,12 +77,15 @@ void *refill_counter(void *args){
 			last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
 			
 			entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size;
+			unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+
 
 			/* update counter in AF_XDP */
 			if(config.working_mode & MODE_AF_XDP){
 				/* periodic lookup in eBPF map */
-				if(last_check > (secs_clock + 1)){
-					ret = bpf_map_lookup_elem(contracts_map, &entries[i].key, &entries[i].contract);
+				if(last_check > (secs_clock + 1) && (config.working_mode & MODE_XDP)){
+					printf("Reading eBPF global vars..\n");
+					entries[i].contract = skeleton->bss->contracts[hash_key];
 					khashmap_update_elem(&contracts,&entries[i].key, &entries[i].contract, 0);
 					secs_clock = last_check;
 				}else{
@@ -88,11 +95,11 @@ void *refill_counter(void *args){
 
 			/* update counter in XDP */
 			if(config.working_mode & MODE_XDP){
-			ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
-			if (ret) {
-				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
+				//printf("Updating XDP..\n");
+				skeleton->bss->contracts[hash_key] = entries[i].contract;
+				//ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
 			}
-		}
+		
 	}
 	usleep(1000);
 	}
@@ -104,7 +111,6 @@ void *refill_counter(void *args){
 static inline unsigned limit_rate(void *pkt,unsigned len, struct session_id *key, struct contract *contract){
 	void *pkt_end = pkt + len;
     uint64_t size = (pkt_end - pkt) * 8;
-
 
     if(contract->counter < size){
         return -1;
@@ -244,20 +250,23 @@ static void init_contracts(const char *conctracts_path)
 		i++;
 
 		if (config.working_mode & MODE_XDP) {
-			struct bpf_map *map;
+			printf("Ok init..\n");
+			unsigned hash_key = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+			skeleton->bss->contracts[hash_key] = entry->contract;
+		// 	struct bpf_map *map;
 
-			map = bpf_object__find_map_by_name(obj, "contracts");
-			contracts_map = bpf_map__fd(map);
-			if (contracts_map < 0) {
-				fprintf(stderr, "ERROR: no contracts map found: %s\n",
-					strerror(contracts_map));
-				exit(EXIT_FAILURE);
-			}
-			ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
-			if (ret) {
-				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-				exit(EXIT_FAILURE);
-			}
+		// 	map = bpf_object__find_map_by_name(obj, "contracts");
+		// 	contracts_map = bpf_map__fd(map);
+		// 	if (contracts_map < 0) {
+		// 		fprintf(stderr, "ERROR: no contracts map found: %s\n",
+		// 			strerror(contracts_map));
+		// 		exit(EXIT_FAILURE);
+		// 	}
+		// 	ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
+		// 	if (ret) {
+		// 		fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
+		// 		exit(EXIT_FAILURE);
+		// 	}
 		}
 	}
 
@@ -277,6 +286,7 @@ static void init_contracts(const char *conctracts_path)
 			}
 		}
 	}
+	printf("Launching refill thread..\n");
     pthread_create(&refill_thread, NULL, refill_counter, entries);
 	printf("Contract loaded..\n");
     return;
@@ -339,6 +349,11 @@ static void int_usr(int sig)
 	print_stats(&config, obj);
 }
 
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+{
+	return vfprintf(stderr, format, args);
+}
+
 int main(int argc, char **argv)
 {
 	signal(SIGINT, int_exit);
@@ -346,15 +361,45 @@ int main(int argc, char **argv)
 	signal(SIGABRT, int_exit);
 	signal(SIGUSR1, int_usr);
 
+	int err;
 	xsknfv_init(argc, argv, &config, &obj);
+
+	if(config.working_mode & MODE_XDP){
+		libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+		libbpf_set_print(libbpf_print_fn);
+
+		skeleton = policer_wc_kern__open();
+
+		err = policer_wc_kern__load(skeleton);
+			if (err) {
+				fprintf(stderr, "Failed to load and verify BPF skeleton\n");
+				return 1;
+		}
+		int if_index = if_nametoindex(config.interfaces[0]);
+		printf("Interface index: %d\n", if_index);
+		if(!if_index){
+			printf("get ifindex from interface name failed\n");
+			return EXIT_FAILURE;
+		}
+		skeleton->links.rate_limiter = bpf_program__attach_xdp(skeleton->progs.rate_limiter, if_index);
+		if(!skeleton->links.rate_limiter){
+			printf("unable to attach xdp program\n");
+			return EXIT_FAILURE;
+		}
+
+		if (config.working_mode & MODE_AF_XDP) {
+			enter_xsks_into_map(skeleton->obj);
+		}
+
+		printf("Skeleton OK\n");
+	}
+
 
 	parse_command_line(argc, argv, argv[0]);
 
 	setlocale(LC_ALL, "");
 
 	init_contracts("./contracts");
-
-	pthread_spin_init(&lock, 0);
 
 	xsknfv_start_workers();
 
