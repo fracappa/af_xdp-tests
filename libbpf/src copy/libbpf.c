@@ -10646,6 +10646,8 @@ int libbpf_num_possible_cpus(void)
 int bpf_object__open_skeleton(struct bpf_object_skeleton *s,
 			      const struct bpf_object_open_opts *opts)
 {
+	printf("bpf_object__open_skeleton ============================== ");
+
 	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, skel_opts,
 		.object_name = s->name,
 	);
@@ -10759,6 +10761,7 @@ int bpf_object__load_skeleton(struct bpf_object_skeleton *s)
 
 int bpf_object__attach_skeleton(struct bpf_object_skeleton *s)
 {
+	printf("bpf_object__attach_skeleton ============================== ");
 	int i, err;
 
 	for (i = 0; i < s->prog_cnt; i++) {

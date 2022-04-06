@@ -1,7 +1,7 @@
 #include <stdint.h>
 
 
-#define MAX_CONTRACTS 100000
+#define MAX_CONTRACTS 10
 
 enum {
     ACTION_PASS,
@@ -15,6 +15,7 @@ struct contract{
     int64_t rate;
     int64_t window_size;
     uint64_t counter;
+    uint64_t last_update;
 };
 
 struct session_id {
@@ -25,4 +26,7 @@ struct session_id {
 	uint8_t proto;
 } __attribute__((packed));
 
-
+struct policy{
+    unsigned key;
+    struct contract contract;
+};

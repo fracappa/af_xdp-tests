@@ -10707,6 +10707,8 @@ int bpf_object__open_skeleton(struct bpf_object_skeleton *s,
 int bpf_object__load_skeleton(struct bpf_object_skeleton *s)
 {
 	int i, err;
+	pr_warn("Trying to load BPF skeleton *************************'1n");
+
 
 	err = bpf_object__load(*s->obj);
 	if (err) {
@@ -10761,18 +10763,25 @@ int bpf_object__attach_skeleton(struct bpf_object_skeleton *s)
 {
 	int i, err;
 
+	pr_warn("attach succedes*****************************\n");;
+
+
 	for (i = 0; i < s->prog_cnt; i++) {
+		pr_warn("attach 1 \n\n ");;
 		struct bpf_program *prog = *s->progs[i].prog;
 		struct bpf_link **link = s->progs[i].link;
 		const struct bpf_sec_def *sec_def;
-
+		pr_warn("attach 2 \n\n ");
 		if (!prog->load)
 			continue;
-
+		pr_warn("attach 3 \n\n ");
 		sec_def = find_sec_def(prog->sec_name);
-		if (!sec_def || !sec_def->attach_fn)
+		if (!sec_def || !sec_def->attach_fn) {
+			pr_warn("sec_def->attach_fn %d", sec_def->attach_fn);
 			continue;
-
+		
+		}
+		pr_warn("attach 4 \n\n ");
 		*link = sec_def->attach_fn(sec_def, prog);
 		err = libbpf_get_error(*link);
 		if (err) {
@@ -10780,6 +10789,7 @@ int bpf_object__attach_skeleton(struct bpf_object_skeleton *s)
 				bpf_program__name(prog), err);
 			return libbpf_err(err);
 		}
+		pr_warn("attach 5 \n\n ");
 	}
 
 	return 0;
