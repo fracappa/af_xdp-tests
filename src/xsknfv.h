@@ -67,12 +67,14 @@ struct xsknfv_socket_stats {
 /* Current API */
 int xsknfv_init(int argc, char **argv, struct xsknfv_config *config,
 		struct bpf_object **bpf_obj);
+int xsknfv_init_skel(int argc, char **argv, struct xsknfv_config *config,
+		struct bpf_object **bpf_obj, void *skeleton);
 int xsknfv_cleanup();
 int xsknfv_start_workers();
 int xsknfv_stop_workers();
 int xsknfv_get_socket_stats(unsigned worker_idx, unsigned iface_idx,
 		struct xsknfv_socket_stats *stats);
-
+void enter_xsks_into_map(struct bpf_object *obj);
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

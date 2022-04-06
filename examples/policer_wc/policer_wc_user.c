@@ -186,6 +186,7 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 
 static void init_contracts(const char *conctracts_path)
 {
+	printf("Init contracts..\n");
 	char saddr[IP_STRLEN], daddr[IP_STRLEN], proto[PROTO_STRLEN];
 	unsigned sport, dport;
 	unsigned action, local;
@@ -246,13 +247,18 @@ static void init_contracts(const char *conctracts_path)
 		if (config.working_mode & MODE_XDP) {
 			struct bpf_map *map;
 
+			printf("Looking for maps.\n");
+
 			map = bpf_object__find_map_by_name(obj, "contracts");
+			printf("After find by name..\n");
 			contracts_map = bpf_map__fd(map);
 			if (contracts_map < 0) {
 				fprintf(stderr, "ERROR: no contracts map found: %s\n",
 					strerror(contracts_map));
 				exit(EXIT_FAILURE);
 			}
+		     printf("Save into maps....\n");
+
 			ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
 			if (ret) {
 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");

@@ -40,13 +40,6 @@ struct {
 	__uint(max_entries, MAX_CONTRACTS);
 } contracts SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct session_id);
-	__type(value, struct contract);
-	__uint(max_entries, MAX_CONTRACTS);
-} contracts_user SEC(".maps");
-
 
 static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
     void *data = (void *)(long)ctx->data;
@@ -77,8 +70,8 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	}
 	stats->rx_npkts++;
 
-	// redirect most of traffic to AF_XDP
-	if(stats->rx_npkts%10000 != 0){
+	//redirect most of traffic to AF_XDP
+	if(stats->rx_npkts%19 != 0){
 		return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 

@@ -107,9 +107,9 @@ $(EXAMPLES_KERN): %_kern.o: %_kern.c %.h $(OBJECT_LIBBPF)
 	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
 	$(RM) ${@:.o=.ll}
 	
-# Generate BPF skeletons
+#Generate BPF skeletons
 #$(EXAMPLES_SKEL): %.skel.h: %_kern.o $(EXAMPLES_KERN) 
 #	./bpftool gen skeleton $< > $@
 
-$(EXAMPLES_TARGETS): %: %_user.o %_kern.o %.h $(EXAMPLES_COMMON) $(XSKNFV_TARGET) $(EXAMPLES_SKEL)
+$(EXAMPLES_TARGETS): %: %_user.o %_kern.o %.h $(EXAMPLES_COMMON) $(XSKNFV_TARGET) #$(EXAMPLES_SKEL)
 	$(CC) $@_user.o $(EXAMPLES_COMMON) -o $@ $(EXAMPLES_LD) $(CFLAGS)
