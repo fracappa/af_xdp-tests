@@ -36,8 +36,6 @@ volatile unsigned long lookup_time = 0;
 #endif
 
 struct bpf_object *obj;
-//struct bpf_object *obj_user;
-int contracts_map, contracts_user_map;
 struct xsknfv_config config;
 
 struct policer_wc_kern *skeleton;
@@ -63,45 +61,20 @@ uint64_t secs_clock = 0;
 void *refill_counter(void *args){
 	struct contract_entry *entries;
 	entries = (struct contract_entry *)args;
-	int ret,i;
+	int i;
 
-	struct timespec time;
-	uint64_t last_check;						/* check eBPF map counter */
-	struct session_id key;
-	struct contract contract;
+	uint64_t amount;
 
     while(1){
 		for(i=0; i < nrules; i++){
 
-			clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-			last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
-			
-			entries[i].contract.counter = entries[i].contract.rate * entries[i].contract.window_size;
+			amount = entries[i].contract.rate * entries[i].contract.window_size * 1000;
 			unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+			__sync_lock_test_and_set(&skeleton->bss->contracts[hash_key].counter, amount);
 
 
-			/* update counter in AF_XDP */
-			if(config.working_mode & MODE_AF_XDP){
-				/* periodic lookup in eBPF map */
-				if(last_check > (secs_clock + 1) && (config.working_mode & MODE_XDP)){
-					printf("Reading eBPF global vars..\n");
-					entries[i].contract = skeleton->bss->contracts[hash_key];
-					khashmap_update_elem(&contracts,&entries[i].key, &entries[i].contract, 0);
-					secs_clock = last_check;
-				}else{
-					khashmap_update_elem(&contracts,  &entries[i].key, &entries[i].contract, 0);
-				}
-			}
-
-			/* update counter in XDP */
-			if(config.working_mode & MODE_XDP){
-				//printf("Updating XDP..\n");
-				skeleton->bss->contracts[hash_key] = entries[i].contract;
-				//ret = bpf_map_update_elem(contracts_map, &entries[i].key, &entries[i].contract, BPF_ANY);
-			}
-		
-	}
-	usleep(1000);
+		}
+		sleep(1);
 	}
 	pthread_exit(0);
 }
@@ -114,10 +87,8 @@ static inline unsigned limit_rate(void *pkt,unsigned len, struct session_id *key
 
     if(contract->counter < size){
         return -1;
-    }
-
-	contract->counter = contract->counter - size;
-	khashmap_update_elem(&contracts, key, contract, 0);
+    }	
+    __sync_fetch_and_add(&contract->counter, -size);
 
     return 0;
 
@@ -166,9 +137,11 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-	struct contract *contract = khashmap_lookup_elem(&contracts, &key);
 
-	if (ret) {
+	unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+	struct contract *contract = &skeleton->bss->contracts[hash_key];
+
+	if (contract->rate == 0) {
 		printf("No contract..\n");
 		return -1;
 	}
@@ -244,30 +217,14 @@ static void init_contracts(const char *conctracts_path)
 		entry->contract.local = local;
         entry->contract.rate = rate;
         entry->contract.window_size = window_size;
-        entry->contract.counter = rate * window_size * 1000;
+        entry->contract.counter = rate * window_size;
 
 
 		i++;
 
-		if (config.working_mode & MODE_XDP) {
-			printf("Ok init..\n");
-			unsigned hash_key = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-			skeleton->bss->contracts[hash_key] = entry->contract;
-		// 	struct bpf_map *map;
+		unsigned hash_key = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+		skeleton->bss->contracts[hash_key] = entry->contract;
 
-		// 	map = bpf_object__find_map_by_name(obj, "contracts");
-		// 	contracts_map = bpf_map__fd(map);
-		// 	if (contracts_map < 0) {
-		// 		fprintf(stderr, "ERROR: no contracts map found: %s\n",
-		// 			strerror(contracts_map));
-		// 		exit(EXIT_FAILURE);
-		// 	}
-		// 	ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
-		// 	if (ret) {
-		// 		fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-		// 		exit(EXIT_FAILURE);
-		// 	}
-		}
 	}
 
 	if (i != nrules) {
@@ -275,20 +232,8 @@ static void init_contracts(const char *conctracts_path)
 		exit(-1);
 	}
 
-
-	if (config.working_mode & MODE_AF_XDP) {
-		khashmap_init(&contracts, sizeof(struct session_id), sizeof(struct contract), MAX_CONTRACTS);
-		for(int i = 0; i < nrules; i++){
-			if(khashmap_update_elem(&contracts, &entries[i].key,
-					&entries[i].contract, 0)){
-				fprintf(stderr, "Error adding elemetn to hash map\n");
-				exit(EXIT_FAILURE);
-			}
-		}
-	}
-	printf("Launching refill thread..\n");
+	/* launch refilling-token thread */
     pthread_create(&refill_thread, NULL, refill_counter, entries);
-	printf("Contract loaded..\n");
     return;
 }
 

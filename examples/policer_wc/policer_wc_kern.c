@@ -53,11 +53,7 @@ struct contract contracts[MAX_CONTRACTS] = {};
 static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
-
 	uint64_t size = (data_end - data) * 8;
-
-	  bpf_printk("Applying limit..\n");
-
 	 
 	if (contract->counter < size) {
 		return XDP_DROP;
@@ -72,9 +68,10 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
   int index = ctx->rx_queue_index;
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
-  struct session_id key = {0};
-  
+  struct session_id key = {0};  
   int zero = 0;
+  struct contract *contract;
+
 
  struct xdp_cpu_stats *stats = bpf_map_lookup_elem(&xdp_stats, &zero);
 if (!stats) {
@@ -132,11 +129,11 @@ if (!stats) {
 	key.proto = iph->protocol;
 
 	//struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
-	//unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-	struct contract *contract = &contracts[8];
+	volatile unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+	unsigned safe_key = hash_key;
+	contract = &contracts[safe_key];
 
-	if (!contract) {
-		bpf_printk("No contracts..\n");
+	if(safe_key >= MAX_CONTRACTS)	{
 		return XDP_DROP;
 	}
 

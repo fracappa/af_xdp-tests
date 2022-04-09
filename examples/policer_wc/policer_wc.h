@@ -24,7 +24,7 @@ struct session_id {
 	uint16_t sport;
 	uint16_t dport;
 	uint8_t proto;
-} __attribute__((packed));
+};
 
 struct policy{
     unsigned key;
