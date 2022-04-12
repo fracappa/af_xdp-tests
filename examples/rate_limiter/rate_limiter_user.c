@@ -24,6 +24,9 @@
 #include <pthread.h>
 #include <sys/sysinfo.h>
 
+#include "rate_limiter.skel.h"
+
+
 static int benchmark_done;
 static int opt_quiet;
 static int opt_extra_stats;
@@ -35,20 +38,22 @@ volatile unsigned long lookup_time = 0;
 struct bpf_object *obj;
 struct xsknfv_config config;
 
-pthread_t clock_thread;
+struct rate_limiter_kern *skeleton;
+
 unsigned nrules;
+pthread_t clock_thread;
 
 
 
 #define IP_STRLEN 16
 #define PROTO_STRLEN 4
 
-struct contract {
-  int8_t action;
-  int8_t local;
-  struct bucket bucket;
-  pthread_spinlock_t lock;
-};
+// struct contract {
+//   int8_t action;
+//   int8_t local;
+//   struct bucket bucket;
+//   pthread_spinlock_t lock;
+// };
 
 struct contract_entry{
 	struct session_id key;
@@ -64,128 +69,60 @@ int contracts_map;
 pthread_t refill_thread;
 
 
-void *periodic_lookup(void *args){
-	struct contract_entry *entries;
-	entries = (struct contract_entry *)args;
-	int ret,i;
+// void *periodic_lookup(void *args){
+// 	struct contract_entry *entries;
+// 	entries = (struct contract_entry *)args;
+// 	int ret,i;
 
-	struct timespec time;
-	uint64_t last_check;						/* check eBPF map counter */
-	struct session_id key;
-	struct contract contract;
+// 	struct timespec time;
+// 	uint64_t last_check;						/* check eBPF map counter */
+// 	struct session_id key;
+// 	struct contract contract;
 
-	printf("nrules: %d\n", nrules);
-    while(1){
-		for(i=0; i < nrules; i++){
-			if(entries[i].contract.local == 0){
-				clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-				last_check =  time.tv_sec * 1 + time.tv_nsec * 0;
-				
-				printf("timer: %ld\n", time.tv_sec);
-
-				printf("||Tokens: %lu\n", entries[i].contract.bucket.tokens);
-				if(last_check > (secs_clock + 1)){
-					printf("reading eBPF map in userspace..\n");
-					ret = bpf_map_lookup_elem(contracts_map, &entries[i].key, &entries[i].contract);
-					khashmap_update_elem(&contracts, &entries[i].key, &entries[i].contract, 0);
-					printf("Tokens: %lu\n", entries[i].contract.bucket.tokens);
-					secs_clock = last_check;
-				}
-			// 	// ret = bpf_map_update_elem(contracts_user_map, &entries[i].key, &entries[i].contract, BPF_ANY);
-			}
-			if (ret) {
-				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-			}
-		}
-		sleep(1);
-    }
-    pthread_exit(0);
-}
-
-// void *update_clock(void * args){
-// 	struct bpf_map *map;
-// 	int zero = 0, clock_map, ret; 
-// 	uint64_t msec = 0;
-// 	khashmap_init(&clock_hashmap, sizeof(int), sizeof(uint64_t), 1);
-
-// 	while(true){
-// 		msec++;
-// 		if(config.working_mode & MODE_XDP){
-// 			map = bpf_object__find_map_by_name(obj, "clock");
-// 			clock_map = bpf_map__fd(map);
-
-// 			if (clock_map < 0) {
-// 				fprintf(stderr, "ERROR: no clock map found: %s\n",
-// 					strerror(clock_map));
-// 				exit(EXIT_FAILURE);
-// 			}
-// 			ret = bpf_map_update_elem(clock_map, &zero, &msec, BPF_ANY);
-
-// 			if (ret) {
-// 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-// 				exit(EXIT_FAILURE);
-// 			}
+//     while(1){
+// 		for(i=0; i < nrules; i++){
+			
 // 		}
-// 		if(config.working_mode & AF_XDP){
-// 				if((khashmap_update_elem(&clock_hashmap, &zero,
-// 					&msec, 0))){
-// 						fprintf(stderr,"ERROR: AF_XDP update time.\n");
-// 						exit(EXIT_FAILURE);
-// 					}
-// 		}
-// 		printf("Updating clock (%lu) ...\n", msec);
-// 		usleep(1000);
-// 	}
-// 	exit(0);
+// 		sleep(1);
+//     }
+//     pthread_exit(0);
 // }
 
-static inline unsigned limit_rate(void *pkt,unsigned len, struct session_id *key, struct contract *contract){
+
+
+static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract_u, struct contract *contract_k){
 	void *pkt_end = pkt + len;
-	//int zero = 0;
-	// clock_t now = clock();
-	// now/= 1000;
 	struct timespec time;
 	clock_gettime(CLOCK_MONOTONIC_RAW, &time);
 
 	uint64_t now = time.tv_sec * 1000 + time.tv_nsec/1000000;
-	// uint64_t *clock = (unsigned long *)khashmap_lookup_elem(&clock_hashmap, &zero);
-	// uint64_t now = *clock;
 
-	// struct timespec t;
-	// clock_gettime(CLOCK_MONOTONIC, &t);
-	// uint64_t now = t.tv_nsec;
-
-	if (now > contract->bucket.last_refill){
-		// printf("Refilling..\n");
-		//pthread_spin_lock(&contract->lock);
-		if (now > contract->bucket.last_refill) {
+	/* refilling */
+	if (now > contract_u->bucket.last_refill){
+		if (now > contract_u->bucket.last_refill) {
 			uint64_t new_tokens =
-				(now - contract->bucket.last_refill) * contract->bucket.refill_rate;
+				(now - contract_u->bucket.last_refill) * contract_u->bucket.refill_rate;
 
-			if (contract->bucket.tokens + new_tokens > contract->bucket.capacity) {
-				new_tokens = contract->bucket.capacity - contract->bucket.tokens;
+			if (contract_u->bucket.tokens + new_tokens > contract_u->bucket.capacity) {
+				new_tokens = contract_u->bucket.capacity - contract_u->bucket.tokens;
 			}
-
-		//__sync_fetch_and_add(&contract->bucket.tokens, new_tokens);
-		contract->bucket.tokens += new_tokens;
-		khashmap_update_elem(&contracts, key, contract, 0);
-		contract->bucket.last_refill = now;
-		// printf("Last refill: %lu\n", contract->bucket.last_refill);
-		//pthread_spin_unlock(&contract->lock);
-	}
+			/* possible outcome due to no critical section usage */
+			if(contract_u->bucket.tokens <= 0){
+				new_tokens = contract_u->bucket.capacity;
+			}
+		__sync_fetch_and_add(&contract_u->bucket.tokens, new_tokens);
+		contract_u->bucket.last_refill = now;
+		}
   }
   
   // Consume tokens
   uint64_t needed_tokens = (pkt_end - pkt) * 8;
   int8_t retval;
 
-  if (contract->bucket.tokens >= needed_tokens) {
-    //__sync_fetch_and_add(&contract->bucket.tokens, -needed_tokens);
-	contract->bucket.tokens -= needed_tokens;
-	khashmap_update_elem(&contracts, key, contract, 0);
+  if (contract_k->bucket.tokens + contract_u->bucket.tokens >= needed_tokens*2) {
+	__sync_fetch_and_add(&contract_u->bucket.tokens, -needed_tokens);
     retval = 0;
   } else {
-	 // printf("Not enough tokens..\n");
     retval = -1;
   }
   return retval;
@@ -227,48 +164,32 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 		key.sport = udph->source;
 		key.dport = udph->dest;
 		break;
-	// case IPPROTO_ICMP:
-	// 	key.sport = 0;
-	// 	key.dport = 0;
-	// 	break;
 	}
 
 	key.saddr = iph->saddr;
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-// #ifdef MONITOR_LOOKUP_TIME
-//     struct timespec tp_before, tp_after;
-//     clock_gettime(CLOCK_MONOTONIC, &tp_before);
-// #endif
-	struct contract *contract = khashmap_lookup_elem(&contracts, &key);
-	// action = my_hashmap__find(&acl, &key);
-// #ifdef MONITOR_LOOKUP_TIME
-//     clock_gettime(CLOCK_MONOTONIC, &tp_after);
-//     lookup_time += tp_after.tv_nsec + tp_after.tv_sec * 1000000000
-// 			- (tp_before.tv_nsec + tp_before.tv_sec * 1000000000);
-// #endif
-if (!contract) {
-	return -1;
-  }
-//   if(contract->local == 1){
-// 	  return -1;
-//   }
+	unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+	struct contract *contract_u = &skeleton->bss->contracts_user[hash_key];
+	struct contract *contract_k = &skeleton->bss->contracts_kern[hash_key];
+
+
   // Apply action
-  switch (contract->action) {
-    case ACTION_PASS:
-      return 0;
-      break;
+	switch (contract_u->action) {
+	case ACTION_PASS:
+		return 0;
+		break;
 
-    case ACTION_LIMIT:
-    	return limit_rate(pkt, len, &key, contract);
-      break;
+	case ACTION_LIMIT:
+		return limit_rate(pkt, len, contract_u, contract_k);
+		break;
 
-    case ACTION_DROP:
-      return -1;
-      break;
-  }
-  return 0;
+	case ACTION_DROP:
+		return -1;
+		break;
+	}
+	return 0;
 }
 
 static void init_contracts(const char *conctracts_path)
@@ -278,15 +199,11 @@ static void init_contracts(const char *conctracts_path)
 	unsigned action, local;
 	uint64_t refill_rate, capacity;
 	FILE *f = fopen(conctracts_path, "r");
-	struct timespec time;
 	struct in_addr addr;
 	struct contract_entry *entry;
-	uint64_t start, now;
 	int i, ret;
 
-	start =time.tv_sec * 1000 + time.tv_nsec/1000000;
 
-	printf("Loading the contracts...\n");
 	if (f == NULL) {
 		exit_with_error(errno);
 	}
@@ -333,30 +250,13 @@ static void init_contracts(const char *conctracts_path)
 		entry->contract.bucket.refill_rate = refill_rate;
 		entry->contract.bucket.capacity = capacity;
 		entry->contract.bucket.tokens = 0;
-		// clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-		// now =time.tv_sec * 1000 + time.tv_nsec/1000000;
-		// entry->contract.bucket.tokens = (now/1000000)*refill_rate;
-		pthread_spin_init(&entry->contract.lock, 0);
-
 		i++;
 
-		if (config.working_mode & MODE_XDP) {
-			struct bpf_map *map;
-			int i;
+		/* token bucket case: two eBPF global vars, one for XDP the other for AF_XDP */
+		unsigned hash_key = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+		skeleton->bss->contracts_kern[hash_key] = entry->contract;
+		skeleton->bss->contracts_user[hash_key] = entry->contract;
 
-			map = bpf_object__find_map_by_name(obj, "contracts");
-			contracts_map = bpf_map__fd(map);
-			if (contracts_map < 0) {
-				fprintf(stderr, "ERROR: no contracts map found: %s\n",
-					strerror(contracts_map));
-				exit(EXIT_FAILURE);
-			}
-			ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
-			if (ret) {
-				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-				exit(EXIT_FAILURE);
-			}
-		}
 	}
 
 	if (i != nrules) {
@@ -364,19 +264,7 @@ static void init_contracts(const char *conctracts_path)
 		exit(-1);
 	}
 	
-
-	if (config.working_mode & MODE_AF_XDP) {
-		khashmap_init(&contracts, sizeof(struct session_id), sizeof(struct contract), MAX_CONTRACTS);
-		// my_hashmap__init(&acl, nrules, sizeof(struct session_id), sizeof(int));
-		for(int i = 0; i < nrules; i++){
-			if(khashmap_update_elem(&contracts, &entries[i].key,
-					&entries[i].contract, 0)){
-				fprintf(stderr, "Error adding elemetn to hash map\n");
-				exit(EXIT_FAILURE);
-			}
-		}
-	}
-	pthread_create(&refill_thread, NULL, periodic_lookup, entries);
+	// pthread_create(&refill_thread, NULL, periodic_lookup, entries);
 	printf("Contract loaded..\n");
     return;
 }
@@ -438,8 +326,16 @@ static void int_usr(int sig)
 	print_stats(&config, obj);
 }
 
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+{
+	return vfprintf(stderr, format, args);
+}
+
+
 int main(int argc, char **argv)
 {
+	int err;
+
 	signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
@@ -447,20 +343,46 @@ int main(int argc, char **argv)
 
 	xsknfv_init(argc, argv, &config, &obj);
 
+	if(config.working_mode & MODE_XDP){
+		libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+		libbpf_set_print(libbpf_print_fn);
+
+		skeleton = rate_limiter_kern__open();
+
+		err = rate_limiter_kern__load(skeleton);
+			if (err) {
+				fprintf(stderr, "Failed to load and verify BPF skeleton\n");
+				return 1;
+		}
+		int if_index = if_nametoindex(config.interfaces[0]);
+		printf("Interface index: %d\n", if_index);
+		if(!if_index){
+			printf("get ifindex from interface name failed\n");
+			return EXIT_FAILURE;
+		}
+		skeleton->links.rate_limiter = bpf_program__attach_xdp(skeleton->progs.rate_limiter, if_index);
+		if(!skeleton->links.rate_limiter){
+			printf("unable to attach xdp program\n");
+			return EXIT_FAILURE;
+		}
+
+		if (config.working_mode & MODE_AF_XDP) {
+			enter_xsks_into_map(skeleton->obj);
+		}
+
+		printf("Skeleton OK\n");
+	}
+
+
 	parse_command_line(argc, argv, argv[0]);
 
 	setlocale(LC_ALL, "");
 
 	init_contracts("./contracts");
 
-	printf("Clock thread launched..\n");
-
 	xsknfv_start_workers();
 
 	init_stats();
-
-	//pthread_create(&clock_thread, NULL, update_clock, NULL);
-
 
 	while (!benchmark_done) {
 		sleep(1);

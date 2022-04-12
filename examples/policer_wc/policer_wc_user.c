@@ -54,9 +54,7 @@ struct contract_entry{
     int size;
 };
 
-struct khashmap contracts;
 struct contract_entry *entries;
-uint64_t secs_clock = 0;
 
 void *refill_counter(void *args){
 	struct contract_entry *entries;
@@ -217,7 +215,7 @@ static void init_contracts(const char *conctracts_path)
 		entry->contract.local = local;
         entry->contract.rate = rate;
         entry->contract.window_size = window_size;
-        entry->contract.counter = rate * window_size;
+        entry->contract.counter = 0;
 
 
 		i++;

@@ -10,9 +10,6 @@
 #include <linux/udp.h>
 #include <bpf/bpf_helpers.h>
 
-
-int trial = 0;
-
 struct xdp_cpu_stats {
 	unsigned long rx_npkts;
 	unsigned long tx_npkts;

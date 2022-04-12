@@ -10,13 +10,6 @@
 #include <linux/udp.h>
 #include <bpf/bpf_helpers.h>
 
-struct contract {
-  int8_t action;
-  int8_t local;
-  struct bucket bucket;
-  struct bpf_spin_lock lock;
-};
-
 struct xdp_cpu_stats {
 	unsigned long rx_npkts;
 	unsigned long tx_npkts;
@@ -37,62 +30,43 @@ struct {
 } xsks SEC(".maps");
 
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct session_id);
-	__type(value, struct contract);
-	__uint(max_entries, MAX_CONTRACTS);
-} contracts SEC(".maps");
+struct contract contracts_kern[MAX_CONTRACTS] = {};
+struct contract contracts_user[MAX_CONTRACTS] = {};
 
-// struct {
-// 	__uint(type, BPF_MAP_TYPE_ARRAY);
-// 	__type(key, int);
-// 	__type(value, uint64_t);
-// 	__uint(max_entries, 1);
-// } clock SEC(".maps");
-
-
-static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, struct contract *contract) {
+static inline int limit_rate(struct xdp_md *ctx, struct contract *contract_k, struct contract *contract_u) {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
-	//int zero = 0;
-	const char fmt_str[] = "Available tokens: %d\n";
-
+	
 	uint64_t now = bpf_ktime_get_ns();    /* Francesco Cappa: TO BE CHANGED */
 	now /= 1000000;
 
-	// uint64_t *clock_p = bpf_map_lookup_elem(&clock, &zero);
-	// if (!clock_p) {
-	// 	bpf_printk("Error in retrieving clock.\n");
-	// 	return XDP_DROP;
-	// }
-
-  	// uint64_t now = *clock_p;  // In ms
 
 	//Refill tokens
-	if (now > contract->bucket.last_refill){
-		bpf_spin_lock(&contract->lock);
-		if (now > contract->bucket.last_refill) {
+	if (now > contract_k->bucket.last_refill){
+		// 	bpf_spin_lock(&contract->lock);
+		if (now > contract_k->bucket.last_refill) {
 			uint64_t new_tokens =
-				(now - contract->bucket.last_refill) * contract->bucket.refill_rate;
-			if (contract->bucket.tokens + new_tokens > contract->bucket.capacity) {
-				new_tokens = contract->bucket.capacity - contract->bucket.tokens;
+				(now - contract_k->bucket.last_refill) * contract_k->bucket.refill_rate;
+			if (contract_k->bucket.tokens + new_tokens > contract_k->bucket.capacity) {
+				new_tokens = contract_k->bucket.capacity - contract_k->bucket.tokens;
 			}
-		__sync_fetch_and_add(&contract->bucket.tokens, new_tokens);
-		contract->bucket.last_refill = now;
+			/* possible outcome due to no critical section usage */
+			if(contract_k->bucket.tokens <= 0){
+				new_tokens = contract_k->bucket.capacity;
+			}
+		__sync_fetch_and_add(&contract_k->bucket.tokens, new_tokens);
+		contract_k->bucket.last_refill = now;
 		}
-		bpf_spin_unlock(&contract->lock);
-		bpf_trace_printk(fmt_str, sizeof(fmt_str), contract->bucket.tokens);
+		// 	bpf_spin_unlock(&contract->lock);
 	}
 
 	// // Consume tokens
 	uint64_t needed_tokens = (data_end - data) * 8;
 	uint8_t retval;
-	// const char fmt_str2[] = "Needed tokens: %d\n";
-	// bpf_trace_printk(fmt_str2, sizeof(fmt_str2), needed_tokens);
 
-	if (contract->bucket.tokens >= needed_tokens) {
-		__sync_fetch_and_add(&contract->bucket.tokens, -needed_tokens);
+	/* check both kernel and user resources: x2? */
+	if (contract_u->bucket.tokens + contract_k->bucket.tokens >= needed_tokens*2) {
+		__sync_fetch_and_add(&contract_k->bucket.tokens, -needed_tokens);
 		retval = XDP_TX;
 	} else {
 		retval = XDP_DROP;
@@ -102,27 +76,21 @@ static inline int limit_rate(struct xdp_md *ctx, struct session_id *session, str
 
 
 SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
-  // bpf_printk("Entering XDP program..\n");
-//   int index = ctx->rx_queue_index;
-  void *data = (void *)(long)ctx->data;
-  void *data_end = (void *)(long)ctx->data_end;
-  struct session_id key = {0};
+	int index = ctx->rx_queue_index;
+	void *data = (void *)(long)ctx->data;
+	void *data_end = (void *)(long)ctx->data_end;
+	struct session_id key = {0};
   
-  int zero = 0;
+	int zero = 0;
 
- struct xdp_cpu_stats *stats = bpf_map_lookup_elem(&xdp_stats, &zero);
+	struct xdp_cpu_stats *stats = bpf_map_lookup_elem(&xdp_stats, &zero);
 	if (!stats) {
 		return XDP_ABORTED;
 	}
 	stats->rx_npkts++;
-	/*
-	 * Need to send the at least one packet to user space for busy polling to
-	 * work in combined mode.
-	 * In pure XDP the redirect will fail and the packet will be dropped.
-	 */
-	if (stats->rx_npkts%1000 != 0){
-    	bpf_printk("Redirecting to AF_XDP...\n");
-		return bpf_redirect_map(&xsks, 0, XDP_DROP);
+
+	if (stats->rx_npkts%10 != 0){
+		return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 	
 
@@ -162,49 +130,38 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 
 		key.sport = udph->source;
 		key.dport = udph->dest;
-
 		break;
-
-	// default:
-	// 	key.sport = 0;
-	// 	key.dport = 0;
-    // break;
 	}
 
 	key.saddr = iph->saddr;
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-	struct contract *contract = bpf_map_lookup_elem(&contracts, &key);
+	volatile unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+	unsigned safe_key = hash_key;
 
-	if (!contract) {
+	struct contract *contract_k = &contracts_kern[safe_key];
+	struct contract *contract_u = &contracts_user[safe_key];
+
+	if(safe_key >= MAX_CONTRACTS)	{
 		return XDP_DROP;
-		// bpf_printk("Redirecting to AF_XDP..\n");
-	  	// return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 
-// /* What should be redirected to AF_XDP: remote traffic */
-//   if(contract->local == 0){
-// 	  bpf_printk("Redirecting to AF_XDP..\n");
-// 	  return bpf_redirect_map(&xsks, index, XDP_DROP);
-//   }
+	//Apply action
+	switch (contract_k->action) {
+		case ACTION_PASS:
+		return XDP_PASS;
+		break;
 
+		case ACTION_LIMIT:
+		return limit_rate(ctx, contract_k, contract_u);
+		break;
 
-  //Apply action
-  switch (contract->action) {
-    case ACTION_PASS:
-      return XDP_PASS;
-      break;
-
-    case ACTION_LIMIT:
-      return limit_rate(ctx, &key, contract);
-      break;
-
-    case ACTION_DROP:
-      return XDP_DROP;
-      break;
-  }
-  return XDP_TX;
+		case ACTION_DROP:
+		return XDP_DROP;
+		break;
+	}
+	return XDP_TX;
 }
 
 char _license[] SEC("license") = "GPL";
