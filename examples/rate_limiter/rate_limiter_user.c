@@ -68,29 +68,34 @@ int contracts_map;
 
 pthread_t refill_thread;
 
+void *refill_token(void *args){
+	struct contract_entry *entries;
+	entries = (struct contract_entry *)args;
+	int i;
 
-// void *periodic_lookup(void *args){
-// 	struct contract_entry *entries;
-// 	entries = (struct contract_entry *)args;
-// 	int ret,i;
+	uint64_t amount;
+	struct contract *contract;
 
-// 	struct timespec time;
-// 	uint64_t last_check;						/* check eBPF map counter */
-// 	struct session_id key;
-// 	struct contract contract;
+	while(1){
+		for(i=0; i < nrules; i++){
 
-//     while(1){
-// 		for(i=0; i < nrules; i++){
-			
-// 		}
-// 		sleep(1);
-//     }
-//     pthread_exit(0);
-// }
+			unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+			amount = skeleton->bss->contracts[hash_key].bucket.refill_rate; //tokens/ms
+
+			if(skeleton->bss->contracts[hash_key].bucket.tokens + amount 
+					> skeleton->bss->contracts[hash_key].bucket.capacity){
+					amount = skeleton->bss->contracts[hash_key].bucket.capacity -
+						skeleton->bss->contracts[hash_key].bucket.tokens;
+			}
+			__sync_fetch_and_add(&skeleton->bss->contracts[hash_key].bucket.tokens, amount);
+		}
+		sleep(1);
+	}
+
+}
 
 
-
-static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract_u, struct contract *contract_k){
+static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
 	void *pkt_end = pkt + len;
 	struct timespec time;
 	clock_gettime(CLOCK_MONOTONIC_RAW, &time);
@@ -98,29 +103,29 @@ static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contr
 	uint64_t now = time.tv_sec * 1000 + time.tv_nsec/1000000;
 
 	/* refilling */
-	if (now > contract_u->bucket.last_refill){
-		if (now > contract_u->bucket.last_refill) {
-			uint64_t new_tokens =
-				(now - contract_u->bucket.last_refill) * contract_u->bucket.refill_rate;
+// 	if (now > contract->bucket.last_refill){
+// 		if (now > contract->bucket.last_refill) {
+// 			uint64_t new_tokens =
+// 				(now - contract->bucket.last_refill) * contract->bucket.refill_rate;
 
-			if (contract_u->bucket.tokens + new_tokens > contract_u->bucket.capacity) {
-				new_tokens = contract_u->bucket.capacity - contract_u->bucket.tokens;
-			}
-			/* possible outcome due to no critical section usage */
-			if(contract_u->bucket.tokens <= 0){
-				new_tokens = contract_u->bucket.capacity;
-			}
-		__sync_fetch_and_add(&contract_u->bucket.tokens, new_tokens);
-		contract_u->bucket.last_refill = now;
-		}
-  }
+// 			if (contract->bucket.tokens + new_tokens > contract->bucket.capacity) {
+// 				new_tokens = contract->bucket.capacity - contract->bucket.tokens;
+// 			}
+// 			/* possible outcome due to no critical section usage */
+// 			// if(contract_u->bucket.tokens <= 0){
+// 			// 	new_tokens = contract_u->bucket.capacity;
+// 			// }
+// 		__sync_fetch_and_add(&contract->bucket.tokens, new_tokens);
+// 		contract->bucket.last_refill = now;
+// 		}
+//   }
   
   // Consume tokens
   uint64_t needed_tokens = (pkt_end - pkt) * 8;
   int8_t retval;
 
-  if (contract_k->bucket.tokens + contract_u->bucket.tokens >= needed_tokens*2) {
-	__sync_fetch_and_add(&contract_u->bucket.tokens, -needed_tokens);
+  if (contract->bucket.tokens >= needed_tokens) {
+	__sync_fetch_and_add(&contract->bucket.tokens, -needed_tokens);
     retval = 0;
   } else {
     retval = -1;
@@ -171,18 +176,22 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 	key.proto = iph->protocol;
 
 	unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-	struct contract *contract_u = &skeleton->bss->contracts_user[hash_key];
-	struct contract *contract_k = &skeleton->bss->contracts_kern[hash_key];
+	struct contract *contract = &skeleton->bss->contracts[hash_key];
+
+	if(!contract){
+		printf("No contract..\n");
+		return -1;
+	}
 
 
   // Apply action
-	switch (contract_u->action) {
+	switch (contract->action) {
 	case ACTION_PASS:
 		return 0;
 		break;
 
 	case ACTION_LIMIT:
-		return limit_rate(pkt, len, contract_u, contract_k);
+		return limit_rate(pkt, len, contract);
 		break;
 
 	case ACTION_DROP:
@@ -254,8 +263,7 @@ static void init_contracts(const char *conctracts_path)
 
 		/* token bucket case: two eBPF global vars, one for XDP the other for AF_XDP */
 		unsigned hash_key = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-		skeleton->bss->contracts_kern[hash_key] = entry->contract;
-		skeleton->bss->contracts_user[hash_key] = entry->contract;
+		skeleton->bss->contracts[hash_key] = entry->contract;
 
 	}
 
@@ -264,7 +272,7 @@ static void init_contracts(const char *conctracts_path)
 		exit(-1);
 	}
 	
-	// pthread_create(&refill_thread, NULL, periodic_lookup, entries);
+	pthread_create(&refill_thread, NULL, refill_token, entries);
 	printf("Contract loaded..\n");
     return;
 }

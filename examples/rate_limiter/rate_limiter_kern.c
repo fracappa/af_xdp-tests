@@ -30,10 +30,11 @@ struct {
 } xsks SEC(".maps");
 
 
-struct contract contracts_kern[MAX_CONTRACTS] = {};
-struct contract contracts_user[MAX_CONTRACTS] = {};
+// struct contract contracts_kern[MAX_CONTRACTS] = {};
+// struct contract contracts_user[MAX_CONTRACTS] = {};
+struct contract contracts[MAX_CONTRACTS] = {};
 
-static inline int limit_rate(struct xdp_md *ctx, struct contract *contract_k, struct contract *contract_u) {
+static inline int limit_rate(struct xdp_md *ctx, struct contract *contract) {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 	
@@ -42,31 +43,31 @@ static inline int limit_rate(struct xdp_md *ctx, struct contract *contract_k, st
 
 
 	//Refill tokens
-	if (now > contract_k->bucket.last_refill){
-		// 	bpf_spin_lock(&contract->lock);
-		if (now > contract_k->bucket.last_refill) {
-			uint64_t new_tokens =
-				(now - contract_k->bucket.last_refill) * contract_k->bucket.refill_rate;
-			if (contract_k->bucket.tokens + new_tokens > contract_k->bucket.capacity) {
-				new_tokens = contract_k->bucket.capacity - contract_k->bucket.tokens;
-			}
-			/* possible outcome due to no critical section usage */
-			if(contract_k->bucket.tokens <= 0){
-				new_tokens = contract_k->bucket.capacity;
-			}
-		__sync_fetch_and_add(&contract_k->bucket.tokens, new_tokens);
-		contract_k->bucket.last_refill = now;
-		}
-		// 	bpf_spin_unlock(&contract->lock);
-	}
+	// if (now > contract->bucket.last_refill){
+	// 	// 	bpf_spin_lock(&contract->lock);
+	// 	if (now > contract->bucket.last_refill) {
+	// 		uint64_t new_tokens =
+	// 			(now - contract->bucket.last_refill) * contract->bucket.refill_rate;
+	// 		if (contract->bucket.tokens + new_tokens > contract->bucket.capacity) {
+	// 			new_tokens = contract->bucket.capacity - contract->bucket.tokens;
+	// 		}
+	// 		/* possible outcome due to no critical section usage */
+	// 		// if(contract_k->bucket.tokens <= 0){
+	// 		// 	new_tokens = contract_k->bucket.capacity;
+	// 		// }
+	// 	__sync_fetch_and_add(&contract->bucket.tokens, new_tokens);
+	// 	contract->bucket.last_refill = now;
+	// 	}
+	// 	// 	bpf_spin_unlock(&contract->lock);
+	// }
 
 	// // Consume tokens
 	uint64_t needed_tokens = (data_end - data) * 8;
 	uint8_t retval;
 
 	/* check both kernel and user resources: x2? */
-	if (contract_u->bucket.tokens + contract_k->bucket.tokens >= needed_tokens*2) {
-		__sync_fetch_and_add(&contract_k->bucket.tokens, -needed_tokens);
+	if (contract->bucket.tokens >= needed_tokens) {
+		__sync_fetch_and_add(&contract->bucket.tokens, -needed_tokens);
 		retval = XDP_TX;
 	} else {
 		retval = XDP_DROP;
@@ -89,7 +90,7 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	}
 	stats->rx_npkts++;
 
-	if (stats->rx_npkts%10 != 0){
+	if (stats->rx_npkts%5 != 0){
 		return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 	
@@ -140,21 +141,21 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	volatile unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
 	unsigned safe_key = hash_key;
 
-	struct contract *contract_k = &contracts_kern[safe_key];
-	struct contract *contract_u = &contracts_user[safe_key];
+	struct contract *contract = &contracts[safe_key];
+	// struct contract *contract_u = &contracts_user[safe_key];
 
 	if(safe_key >= MAX_CONTRACTS)	{
 		return XDP_DROP;
 	}
 
 	//Apply action
-	switch (contract_k->action) {
+	switch (contract->action) {
 		case ACTION_PASS:
 		return XDP_PASS;
 		break;
 
 		case ACTION_LIMIT:
-		return limit_rate(ctx, contract_k, contract_u);
+		return limit_rate(ctx, contract);
 		break;
 
 		case ACTION_DROP:

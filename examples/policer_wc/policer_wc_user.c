@@ -68,7 +68,8 @@ void *refill_counter(void *args){
 
 			amount = entries[i].contract.rate * entries[i].contract.window_size * 1000;
 			unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-			__sync_lock_test_and_set(&skeleton->bss->contracts[hash_key].counter, amount);
+			amount -= skeleton->bss->contracts[hash_key].counter;
+			__sync_fetch_and_add(&skeleton->bss->contracts[hash_key].counter, amount);
 
 
 		}
