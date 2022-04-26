@@ -26,7 +26,8 @@ EXAMPLES := drop_macswap/drop_macswap			\
 			checksummer/checksummer				\
 			hybrid_macswap/hybrid_macswap		\
 			rate_limiter/rate_limiter			\
-			policer_wc/policer_wc
+			policer_wc/policer_wc				\
+			shared_counter/shared_counter
 
 EXAMPLES_DIR     := ./examples
 EXAMPLES_TARGETS := $(addprefix $(EXAMPLES_DIR)/,$(EXAMPLES))

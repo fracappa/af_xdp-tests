@@ -66,57 +66,75 @@ struct contract_entry *entries;
 uint64_t secs_clock = 0;
 int contracts_map;
 
-pthread_t refill_thread;
+pthread_t refill_tid;
 
-void *refill_token(void *args){
-	struct contract_entry *entries;
+
+void *refill_thread(void *args){
+    struct contract_entry *entries;
 	entries = (struct contract_entry *)args;
 	int i;
+    unsigned long amount;
 
-	uint64_t amount;
-	struct contract *contract;
+    while(1){
+        for(i=0; i < nrules; i++){
+            	unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+                amount = skeleton->bss->contracts[hash_key].bucket.refill_rate;
 
-	while(1){
-		for(i=0; i < nrules; i++){
+                if(skeleton->bss->contracts[hash_key].bucket.tokens + amount >
+                    skeleton->bss->contracts[hash_key].bucket.capacity){
 
-			unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-			amount = skeleton->bss->contracts[hash_key].bucket.refill_rate; //tokens/ms
-
-			if(skeleton->bss->contracts[hash_key].bucket.tokens + amount 
-					> skeleton->bss->contracts[hash_key].bucket.capacity){
-					amount = skeleton->bss->contracts[hash_key].bucket.capacity -
-						skeleton->bss->contracts[hash_key].bucket.tokens;
-			}
-			__sync_fetch_and_add(&skeleton->bss->contracts[hash_key].bucket.tokens, amount);
-		}
-		sleep(1);
-	}
-
+                        amount = skeleton->bss->contracts[hash_key].bucket.capacity - skeleton->bss->contracts[hash_key].bucket.tokens;
+                    }
+                    __sync_fetch_and_add(&skeleton->bss->contracts[hash_key].bucket.tokens, amount);
+        }
+        usleep(1000);
+    }
+    
 }
+
+// void *periodic_lookup(void *args){
+// 	struct contract_entry *entries;
+// 	entries = (struct contract_entry *)args;
+// 	int ret,i;
+
+// 	struct timespec time;
+// 	uint64_t last_check;						/* check eBPF map counter */
+// 	struct session_id key;
+// 	struct contract contract;
+
+//     while(1){
+// 		for(i=0; i < nrules; i++){
+			
+// 		}
+// 		sleep(1);
+//     }
+//     pthread_exit(0);
+// }
+
 
 
 static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
 	void *pkt_end = pkt + len;
-	struct timespec time;
-	clock_gettime(CLOCK_MONOTONIC_RAW, &time);
+// 	struct timespec time;
+// 	clock_gettime(CLOCK_MONOTONIC_RAW, &time);
 
-	uint64_t now = time.tv_sec * 1000 + time.tv_nsec/1000000;
+// 	uint64_t now = time.tv_sec * 1000 + time.tv_nsec/1000000;
 
-	/* refilling */
-// 	if (now > contract->bucket.last_refill){
-// 		if (now > contract->bucket.last_refill) {
+// 	/* refilling */
+// 	if (now > contract_u->bucket.last_refill){
+// 		if (now > contract_u->bucket.last_refill) {
 // 			uint64_t new_tokens =
-// 				(now - contract->bucket.last_refill) * contract->bucket.refill_rate;
+// 				(now - contract_u->bucket.last_refill) * contract_u->bucket.refill_rate;
 
-// 			if (contract->bucket.tokens + new_tokens > contract->bucket.capacity) {
-// 				new_tokens = contract->bucket.capacity - contract->bucket.tokens;
+// 			if (contract_u->bucket.tokens + new_tokens > contract_u->bucket.capacity) {
+// 				new_tokens = contract_u->bucket.capacity - contract_u->bucket.tokens;
 // 			}
 // 			/* possible outcome due to no critical section usage */
-// 			// if(contract_u->bucket.tokens <= 0){
-// 			// 	new_tokens = contract_u->bucket.capacity;
-// 			// }
-// 		__sync_fetch_and_add(&contract->bucket.tokens, new_tokens);
-// 		contract->bucket.last_refill = now;
+// 			if(contract_u->bucket.tokens <= 0){
+// 				new_tokens = contract_u->bucket.capacity;
+// 			}
+// 		__sync_fetch_and_add(&contract_u->bucket.tokens, new_tokens);
+// 		contract_u->bucket.last_refill = now;
 // 		}
 //   }
   
@@ -177,11 +195,6 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 
 	unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
 	struct contract *contract = &skeleton->bss->contracts[hash_key];
-
-	if(!contract){
-		printf("No contract..\n");
-		return -1;
-	}
 
 
   // Apply action
@@ -272,7 +285,7 @@ static void init_contracts(const char *conctracts_path)
 		exit(-1);
 	}
 	
-	pthread_create(&refill_thread, NULL, refill_token, entries);
+	pthread_create(&refill_tid, NULL, refill_thread, entries);
 	printf("Contract loaded..\n");
     return;
 }
