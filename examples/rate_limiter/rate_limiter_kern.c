@@ -36,8 +36,8 @@ static inline int limit_rate(struct xdp_md *ctx, struct contract *contract) {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 	
-	uint64_t now = bpf_ktime_get_ns();    /* Francesco Cappa: TO BE CHANGED */
-	now /= 1000000;
+	// uint64_t now = bpf_ktime_get_ns();    /* Francesco Cappa: TO BE CHANGED */
+	// now /= 1000000;
 
 
 	//Refill tokens
@@ -60,11 +60,11 @@ static inline int limit_rate(struct xdp_md *ctx, struct contract *contract) {
 	// }
 
 	// // Consume tokens
-	uint64_t needed_tokens = (data_end - data) * 8;
+	uint64_t needed_tokens = (data_end - data + 4) * 8;
 	uint8_t retval;
 
-	if (contracts->bucket.tokens >= needed_tokens) {
-		__sync_fetch_and_add(&contracts->bucket.tokens, -needed_tokens);
+	if (contract->bucket.tokens >= needed_tokens) {
+		__sync_fetch_and_add(&contract->bucket.tokens, -needed_tokens);
 		retval = XDP_TX;
 	} else {
 		retval = XDP_DROP;
@@ -74,6 +74,8 @@ static inline int limit_rate(struct xdp_md *ctx, struct contract *contract) {
 
 
 SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
+			// return bpf_redirect_map(&xsks, 0, XDP_DROP);
+
 	int index = ctx->rx_queue_index;
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
