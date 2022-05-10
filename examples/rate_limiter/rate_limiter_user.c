@@ -60,6 +60,7 @@ struct contract_entry{
 	struct contract contract;	// Policy to be applied to the session key
 };
 
+/* This hash map will be used to store */
 struct khashmap contracts;
 //struct khashmap clock_hashmap;
 struct contract_entry *entries;
@@ -86,120 +87,36 @@ void *refill_thread(void *args){
 
 				clock_gettime(CLOCK_MONOTONIC_RAW, &time);
  				now = time.tv_sec * 1000000 + time.tv_nsec/1000;
-				//  printf("Now  %lu\n", now);
 
-				if(now > skeleton->bss->contracts[hash_key].bucket.last_refill){
 
-					/*  This if-else branch address issues releated to the imprecision of ulseep().
-						This function, as reported also in the man page, could wait more than the us specified.
-					*/
-					if((difference = now - skeleton->bss->contracts[hash_key].bucket.last_refill) > 1000){
-						amount = difference*(skeleton->bss->contracts[hash_key].bucket.refill_rate/1000);
-					}
-					else{
-						amount = skeleton->bss->contracts[hash_key].bucket.refill_rate;
-					}
+				/*  This if-else branch address issues releated to the imprecision of ulseep().
+					This function, as reported also in the man page, could wait more than the us specified.
+				*/
+				difference = (now - skeleton->bss->contracts[hash_key].bucket.last_refill);
+				amount = difference*(skeleton->bss->contracts[hash_key].bucket.refill_rate/1000);
+			
+				
 
-					if(skeleton->bss->contracts[hash_key].bucket.tokens + amount >
-						skeleton->bss->contracts[hash_key].bucket.capacity){
-						amount = skeleton->bss->contracts[hash_key].bucket.capacity - skeleton->bss->contracts[hash_key].bucket.tokens;
-					}
+				if(skeleton->bss->contracts[hash_key].bucket.tokens + amount >
+					skeleton->bss->contracts[hash_key].bucket.capacity){
+					amount = skeleton->bss->contracts[hash_key].bucket.capacity - skeleton->bss->contracts[hash_key].bucket.tokens;
+				}
 
-					__sync_fetch_and_add(&skeleton->bss->contracts[hash_key].bucket.tokens, amount);
-					skeleton->bss->contracts[hash_key].bucket.last_refill = now;	
-		
-				}	
+				__sync_fetch_and_add(&skeleton->bss->contracts[hash_key].bucket.tokens, amount);
+				skeleton->bss->contracts[hash_key].bucket.last_refill = now;	
+				 hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0);
+				printf("Flow %d with hash_key %u\n", i, hash_key);
 			}
 		usleep(1000);
     }
     
 }
 
-// void *refill_thread(void *args){
-//     struct contract_entry *entries;
-// 	entries = (struct contract_entry *)args;
-// 	int i;
-//     unsigned long amount;
-// 	struct timespec time;
-// 	uint64_t start,now;
-
-//     while(1){
-//         for(i=0; i < nrules; i++){
-
-// 				unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-		
-// 				// clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-// 				// now = time.tv_sec * 1000 + time.tv_nsec/1000000;
-
-// 				// if(now > skeleton->bss->contracts[hash_key].bucket.last_refill){
-// 					// printf("Local time: %lu\n", skeleton->bss->contracts[hash_key].bucket.last_refill);
-// 					// printf("Now - last_refill: %lu\n", now - skeleton->bss->contracts[hash_key].bucket.last_refill);
-// 					amount =  skeleton->bss->contracts[hash_key].bucket.refill_rate;
-
-// 					if(skeleton->bss->contracts[hash_key].bucket.tokens + amount >
-// 						skeleton->bss->contracts[hash_key].bucket.capacity){
-
-// 							amount = skeleton->bss->contracts[hash_key].bucket.capacity - skeleton->bss->contracts[hash_key].bucket.tokens;
-// 						}
-//                     __sync_fetch_and_add(&skeleton->bss->contracts[hash_key].bucket.tokens, amount);
-// 					skeleton->bss->contracts[hash_key].bucket.last_refill = now;
-// 				// }
-
-             
-//         }
-// 		usleep(1000);
-//     }
-    
-// }
-
-// void *periodic_lookup(void *args){
-// 	struct contract_entry *entries;
-// 	entries = (struct contract_entry *)args;
-// 	int ret,i;
-
-// 	struct timespec time;
-// 	uint64_t last_check;						/* check eBPF map counter */
-// 	struct session_id key;
-// 	struct contract contract;
-
-//     while(1){
-// 		for(i=0; i < nrules; i++){
-			
-// 		}
-// 		sleep(1);
-//     }
-//     pthread_exit(0);
-// }
-
-
-
 static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
 	void *pkt_end = pkt + len;
-// 	struct timespec time;
-// 	clock_gettime(CLOCK_MONOTONIC_RAW, &time);
-
-// 	uint64_t now = time.tv_sec * 1000 + time.tv_nsec/1000000;
-
-// 	/* refilling */
-// 	if (now > contract_u->bucket.last_refill){
-// 		if (now > contract_u->bucket.last_refill) {
-// 			uint64_t new_tokens =
-// 				(now - contract_u->bucket.last_refill) * contract_u->bucket.refill_rate;
-
-// 			if (contract_u->bucket.tokens + new_tokens > contract_u->bucket.capacity) {
-// 				new_tokens = contract_u->bucket.capacity - contract_u->bucket.tokens;
-// 			}
-// 			/* possible outcome due to no critical section usage */
-// 			if(contract_u->bucket.tokens <= 0){
-// 				new_tokens = contract_u->bucket.capacity;
-// 			}
-// 		__sync_fetch_and_add(&contract_u->bucket.tokens, new_tokens);
-// 		contract_u->bucket.last_refill = now;
-// 		}
-//   }
   
   // Consume tokens
-  uint64_t needed_tokens = (pkt_end - pkt + 4) * 8;
+  int64_t needed_tokens = (pkt_end - pkt + 4) * 8;
   int8_t retval;
 
   if (contract->bucket.tokens >= needed_tokens) {

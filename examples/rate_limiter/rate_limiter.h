@@ -33,4 +33,4 @@ struct session_id {
 	uint8_t proto;
 } __attribute__((packed));
 
-#define MAX_CONTRACTS 10
+#define MAX_CONTRACTS 20

@@ -35,32 +35,9 @@ struct contract contracts[MAX_CONTRACTS] = {};
 static inline int limit_rate(struct xdp_md *ctx, struct contract *contract) {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
-	
-	// uint64_t now = bpf_ktime_get_ns();    /* Francesco Cappa: TO BE CHANGED */
-	// now /= 1000000;
-
-
-	//Refill tokens
-	// if (now > contracts->bucket.last_refill){
-	// 	// 	bpf_spin_lock(&contract->lock);
-	// 	if (now > contracts->bucket.last_refill) {
-	// 		uint64_t new_tokens =
-	// 			(now - contracts->bucket.last_refill) * contracts->bucket.refill_rate;
-	// 		if (contracts->bucket.tokens + new_tokens > contracts->bucket.capacity) {
-	// 			new_tokens = contracts->bucket.capacity - contracts->bucket.tokens;
-	// 		}
-	// 		/* possible outcome due to no critical section usage */
-	// 		if(contracts->bucket.tokens <= 0){
-	// 			new_tokens = contracts->bucket.capacity;
-	// 		}
-	// 	__sync_fetch_and_add(&contracts->bucket.tokens, new_tokens);
-	// 	contracts->bucket.last_refill = now;
-	// 	}
-	// 	// 	bpf_spin_unlock(&contract->lock);
-	// }
 
 	// // Consume tokens
-	uint64_t needed_tokens = (data_end - data + 4) * 8;
+	int64_t needed_tokens = (data_end - data + 4) * 8;
 	uint8_t retval;
 
 	if (contract->bucket.tokens >= needed_tokens) {
