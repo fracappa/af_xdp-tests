@@ -60,12 +60,15 @@ struct contract_entry{
 	struct contract contract;	// Policy to be applied to the session key
 };
 
-/* This hash map will be used to store */
-struct khashmap contracts;
+/* This hash map will be used to store contracts positions within global var */
+struct khashmap positions;
 //struct khashmap clock_hashmap;
 struct contract_entry *entries;
 uint64_t secs_clock = 0;
 int contracts_map;
+
+/* this values is saved in maps in order to index the position in eBPF global var */
+int position; 
 
 pthread_t refill_tid;
 
@@ -74,7 +77,7 @@ pthread_t refill_tid;
 void *refill_thread(void *args){
     struct contract_entry *entries;
 	entries = (struct contract_entry *)args;
-	int i;
+	int i, *position;
     unsigned long amount;
 	struct timespec time;
 	uint64_t now, sleep_time, difference;
@@ -82,34 +85,31 @@ void *refill_thread(void *args){
 	difference = 0;
     while(1){
         for(i=0; i < nrules; i++){
-            	unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-                amount = skeleton->bss->contracts[hash_key].bucket.refill_rate;
+				position = khashmap_lookup_elem(&positions, &entries[i].key);
+                amount = skeleton->bss->contracts[*position].bucket.refill_rate;
 
 				clock_gettime(CLOCK_MONOTONIC_RAW, &time);
  				now = time.tv_sec * 1000000 + time.tv_nsec/1000;
 
 
-				/*  This if-else branch address issues releated to the imprecision of ulseep().
+				/*  This address issues releated to the imprecision of ulseep().
 					This function, as reported also in the man page, could wait more than the us specified.
 				*/
-				difference = (now - skeleton->bss->contracts[hash_key].bucket.last_refill);
-				amount = difference*(skeleton->bss->contracts[hash_key].bucket.refill_rate/1000);
+				difference = (now - skeleton->bss->contracts[*position].bucket.last_refill);
+				amount = difference*(skeleton->bss->contracts[*position].bucket.refill_rate/1000);
 			
 				
 
-				if(skeleton->bss->contracts[hash_key].bucket.tokens + amount >
-					skeleton->bss->contracts[hash_key].bucket.capacity){
-					amount = skeleton->bss->contracts[hash_key].bucket.capacity - skeleton->bss->contracts[hash_key].bucket.tokens;
+				if(skeleton->bss->contracts[*position].bucket.tokens + amount >
+					skeleton->bss->contracts[*position].bucket.capacity){
+					amount = skeleton->bss->contracts[*position].bucket.capacity - skeleton->bss->contracts[*position].bucket.tokens;
 				}
 
-				__sync_fetch_and_add(&skeleton->bss->contracts[hash_key].bucket.tokens, amount);
-				skeleton->bss->contracts[hash_key].bucket.last_refill = now;	
-				 hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0);
-				printf("Flow %d with hash_key %u\n", i, hash_key);
+				__sync_fetch_and_add(&skeleton->bss->contracts[*position].bucket.tokens, amount);
+				skeleton->bss->contracts[*position].bucket.last_refill = now;	
 			}
 		usleep(1000);
     }
-    
 }
 
 static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
@@ -133,6 +133,7 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 
 	void *pkt_end = pkt + len;
 	struct session_id key;
+	int *position;
 
 	struct ethhdr *eth = pkt;
 	if ((void *)(eth + 1) > pkt_end) {
@@ -170,8 +171,10 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-	unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-	struct contract *contract = &skeleton->bss->contracts[hash_key];
+	// unsigned position = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+	// struct contract *contract = &skeleton->bss->contracts[position];
+	position = khashmap_lookup_elem(&positions, &key);
+	struct contract *contract = &skeleton->bss->contracts[*position];
 
 
   // Apply action
@@ -193,6 +196,7 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 
 static void init_contracts(const char *conctracts_path)
 {
+	printf("INIT CONTRACT.\n");
 	char saddr[IP_STRLEN], daddr[IP_STRLEN], proto[PROTO_STRLEN];
 	unsigned sport, dport;
 	unsigned action, local;
@@ -217,6 +221,7 @@ static void init_contracts(const char *conctracts_path)
 	i = 0;
 	while(fscanf(f, "%s %s %u %u %s %u %u %lu %lu",
 	 	saddr, daddr, &sport, &dport, proto, &action, &local, &refill_rate, &capacity) != EOF){
+		
 		entry = &entries[i];
 
 		inet_aton(saddr, &addr);
@@ -249,17 +254,59 @@ static void init_contracts(const char *conctracts_path)
 		entry->contract.bucket.refill_rate = refill_rate;
 		entry->contract.bucket.capacity = capacity;
 		entry->contract.bucket.tokens = 0;
-		i++;
 
 		/* token bucket case: two eBPF global vars, one for XDP the other for AF_XDP */
-		unsigned hash_key = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-		skeleton->bss->contracts[hash_key] = entry->contract;
+		// unsigned position = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+		// skeleton->bss->contracts[position] = entry->contract;
+		if (config.working_mode & MODE_XDP) {
+			// struct bpf_map *map;
+			int i, positions_map;
 
+			// printf("Trying to access eBPF map..\n");
+			// map = bpf_object__find_map_by_name(obj, "positions");
+			positions_map = bpf_map__fd(skeleton->maps.positions);
+			// if (positions_map < 0) {
+			// 	fprintf(stderr, "ERROR: no acl map found: %s\n",
+			// 		strerror(positions_map));
+			// 	exit(EXIT_FAILURE);
+			// }
+			// printf("eBPF map accessed..\n");
+
+			ret = bpf_map_update_elem(positions_map, &entry->key, &i, 0);
+			if (ret) {
+				fprintf(stderr, "ERROR: bpf_map_update_elem %d\n", i);
+				exit(EXIT_FAILURE);
+			}
+
+		}
+
+		/* save the contract within the global var */
+		skeleton->bss->contracts[i] = entry->contract;
+		i++;
 	}
 
 	if (i != nrules) {
 		fprintf(stderr, "Incorrent input file: mismatch in rules number\n");
 		exit(-1);
+	}
+
+
+	if (config.working_mode & MODE_AF_XDP) {
+		khashmap_init(&positions, sizeof(struct session_id), sizeof(int), nrules);
+		for (int i = 0; i < nrules; i++) {
+			if (khashmap_update_elem(&positions, &entries[i].key,
+					&i, 0)) {
+				fprintf(stderr, "Error adding elemetn to hash map\n");
+				exit(EXIT_FAILURE);
+			}
+		}
+	/* save the contract within the global var */
+	printf("Ok AF_XDP\n");
+
+	skeleton->bss->contracts[i] = entry->contract;
+
+	printf("Ok global var\n");
+
 	}
 	
 	pthread_create(&refill_tid, NULL, refill_thread, entries);

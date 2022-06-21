@@ -7,10 +7,10 @@ enum {
 };
 
 struct bucket {
-  int64_t tokens;
-  uint64_t refill_rate;  // tokens/ms
-  uint64_t capacity;
-  uint64_t last_refill;  // Timestamp of the last time the bucket was refilled in ms
+  int64_t tokens;         /* tokens currently available */
+  uint64_t refill_rate;   /* refill rate/ms */
+  uint64_t capacity;    /* maximum bucket size */
+  uint64_t last_refill;   /* timestamp last refill */
 };
 
 // struct contract {
@@ -32,5 +32,10 @@ struct session_id {
 	uint16_t dport;
 	uint8_t proto;
 } __attribute__((packed));
+
+struct mapping{
+  unsigned hash_key;
+  struct contract contract;
+};
 
 #define MAX_CONTRACTS 20

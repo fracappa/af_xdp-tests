@@ -29,6 +29,13 @@ struct {
 	__uint(max_entries, 32);
 } xsks SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct session_id);
+	__type(value, int);
+	__uint(max_entries, MAX_CONTRACTS);
+} positions SEC(".maps");
+
 
 struct contract contracts[MAX_CONTRACTS] = {};
 
@@ -50,8 +57,9 @@ static inline int limit_rate(struct xdp_md *ctx, struct contract *contract) {
 }
 
 
-SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
-			// return bpf_redirect_map(&xsks, 0, XDP_DROP);
+SEC("xdp") 
+int rate_limiter(struct xdp_md *ctx) {
+	// return bpf_redirect_map(&xsks, 0, XDP_DROP);
 
 	int index = ctx->rx_queue_index;
 	void *data = (void *)(long)ctx->data;
@@ -66,7 +74,7 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	}
 	stats->rx_npkts++;
 
-	if (stats->rx_npkts%2 != 0){
+	if (stats->rx_npkts%7 != 0){
 		return bpf_redirect_map(&xsks, index, XDP_DROP);
 	}
 	
@@ -114,15 +122,20 @@ SEC("xdp") int rate_limiter(struct xdp_md *ctx) {
 	key.daddr = iph->daddr;
 	key.proto = iph->protocol;
 
-	volatile unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
-	unsigned safe_key = hash_key;
-
-	struct contract *contract = &contracts[safe_key];
-
-	if(safe_key >= MAX_CONTRACTS)	{
+	int *position = bpf_map_lookup_elem(&positions, &key);
+	
+	if(!position){
 		return XDP_DROP;
 	}
 
+	volatile int array_index = *position;
+	int safe_index = array_index;
+
+
+	if(safe_index < 0 || safe_index >= MAX_CONTRACTS){
+		return XDP_DROP;
+	}
+	struct contract *contract = &contracts[safe_index];
 	//Apply action
 	switch (contract->action) {
 		case ACTION_PASS:
