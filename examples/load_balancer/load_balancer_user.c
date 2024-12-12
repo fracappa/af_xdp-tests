@@ -686,7 +686,7 @@ int main(int argc, char **argv)
 
 	parse_command_line(argc, argv, argv[0]);
 
-	load_services("/home/polycube/src/af_xdp-tests/examples/load_balancer/services.txt");
+	load_services("/home/test1b/git/af_xdp-tests/examples/load_balancer/services.txt");
 
 	xsknfv_start_workers();
 

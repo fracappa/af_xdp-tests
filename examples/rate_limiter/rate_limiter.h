@@ -19,6 +19,12 @@ struct bucket {
 //   struct bpf_spin_lock lock;
 // } /*__attribute__((packed))*/;
 
+struct contract {
+  int8_t action;
+  int8_t local;
+  struct bucket bucket;
+};
+
 struct session_id {
 	uint32_t saddr;
 	uint32_t daddr;
@@ -27,4 +33,4 @@ struct session_id {
 	uint8_t proto;
 } __attribute__((packed));
 
-#define MAX_CONTRACTS 100000
+#define MAX_CONTRACTS 20

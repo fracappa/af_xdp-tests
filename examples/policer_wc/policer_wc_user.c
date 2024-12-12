@@ -5,6 +5,7 @@
 #include "../common/statistics.h"
 
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
@@ -24,6 +25,8 @@
 #include <pthread.h>
 #include <sys/sysinfo.h>
 
+#include "policer_wc.skel.h"
+
 static int benchmark_done;
 static int opt_quiet;
 static int opt_extra_stats;
@@ -35,84 +38,66 @@ volatile unsigned long lookup_time = 0;
 struct bpf_object *obj;
 struct xsknfv_config config;
 
-pthread_t clock_thread;
+struct policer_wc_kern *skeleton;
+
+unsigned nrules;
+pthread_t refill_thread;
 
 
 #define IP_STRLEN 16
 #define PROTO_STRLEN 4
 
-// struct contract {
-//   int8_t action;
-//   int8_t local;
-//   struct bucket bucket;
-//   pthread_spinlock_t lock;
-// };
 
 struct contract_entry{
 	struct session_id key;
 	struct contract contract;	// Policy to be applied to the session key
+    int size;
 };
 
-struct khashmap contracts;
-//struct khashmap clock_hashmap;
 struct contract_entry *entries;
 
-// void *update_clock(void * args){
-// 	struct bpf_map *map;
-// 	int zero = 0, clock_map, ret; 
-// 	uint64_t msec = 0;
-// 	khashmap_init(&clock_hashmap, sizeof(int), sizeof(uint64_t), 1);
+void *refill_counter(void *args){
+	struct contract_entry *entries;
+	entries = (struct contract_entry *)args;
+	int i;
 
-// 	while(true){
-// 		msec++;
-// 		if(config.working_mode & MODE_XDP){
-// 			map = bpf_object__find_map_by_name(obj, "clock");
-// 			clock_map = bpf_map__fd(map);
+	uint64_t amount;
 
-// 			if (clock_map < 0) {
-// 				fprintf(stderr, "ERROR: no clock map found: %s\n",
-// 					strerror(clock_map));
-// 				exit(EXIT_FAILURE);
-// 			}
-// 			ret = bpf_map_update_elem(clock_map, &zero, &msec, BPF_ANY);
+    while(1){
+		for(i=0; i < nrules; i++){
 
-// 			if (ret) {
-// 				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-// 				exit(EXIT_FAILURE);
-// 			}
-// 		}
-// 		if(config.working_mode & AF_XDP){
-// 				if((khashmap_update_elem(&clock_hashmap, &zero,
-// 					&msec, 0))){
-// 						fprintf(stderr,"ERROR: AF_XDP update time.\n");
-// 						exit(EXIT_FAILURE);
-// 					}
-// 		}
-// 		printf("Updating clock (%lu) ...\n", msec);
-// 		usleep(1000);
-// 	}
-// 	exit(0);
-// }
+			amount = entries[i].contract.rate * entries[i].contract.window_size * 1000;
+			unsigned hash_key = jhash(&entries[i].key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+			amount -= skeleton->bss->contracts[hash_key].counter;
+			__sync_fetch_and_add(&skeleton->bss->contracts[hash_key].counter, amount);
 
-static inline unsigned limit_rate(void *pkt,unsigned len, struct contract *contract){
+
+		}
+		sleep(1);
+	}
+	pthread_exit(0);
+}
+
+
+
+static inline unsigned limit_rate(void *pkt,unsigned len, struct session_id *key, struct contract *contract){
 	void *pkt_end = pkt + len;
-	//int zero = 0;
-	// clock_t now = clock();
-	// now/= 1000;
-    int size = len*8;
+    uint64_t size = (pkt_end - pkt) * 8;
+
     if(contract->counter < size){
         return -1;
-    }
+    }	
     __sync_fetch_and_add(&contract->counter, -size);
+
     return 0;
 
 }
 
 int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
-{
-
+{	
 	void *pkt_end = pkt + len;
 	struct session_id key;
+	int ret;
 
 	struct ethhdr *eth = pkt;
 	if ((void *)(eth + 1) > pkt_end) {
@@ -152,10 +137,14 @@ int xsknfv_packet_processor(void *pkt, unsigned len, unsigned ingress_ifindex)
 	key.proto = iph->protocol;
 
 
-struct contract *contract = khashmap_lookup_elem(&contracts, &key);
-if (!contract) {
-	return -1;
-  }
+	unsigned hash_key = jhash(&key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+	struct contract *contract = &skeleton->bss->contracts[hash_key];
+
+	if (contract->rate == 0) {
+		printf("No contract..\n");
+		return -1;
+	}
+
 
   switch (contract->action) {
     case ACTION_PASS:
@@ -163,7 +152,7 @@ if (!contract) {
       break;
 
     case ACTION_LIMIT:
-    	return limit_rate(pkt, len, contract);
+    	return limit_rate(pkt, len, &key, contract);
       break;
 
     case ACTION_DROP:
@@ -182,15 +171,12 @@ static void init_contracts(const char *conctracts_path)
 	FILE *f = fopen(conctracts_path, "r");
 	struct in_addr addr;
 	struct contract_entry *entry;
-	unsigned nrules;
 	int i, ret;
 
-	printf("Loading the contracts...\n");
 	if (f == NULL) {
 		exit_with_error(errno);
 	}
 
-	/* The first line shall contain the number of rules */
 	if(fscanf(f, "%u", &nrules) != 1) {
 		exit_with_error(-1);
 	}
@@ -210,7 +196,7 @@ static void init_contracts(const char *conctracts_path)
 
 		entry->key.sport = htons(sport);
 		entry->key.dport = htons(dport);
-	
+
 
 
 		if (strcmp(proto, "TCP") == 0) {
@@ -228,48 +214,25 @@ static void init_contracts(const char *conctracts_path)
 		/* initialize contract attributes associated to the session key */
 		entry->contract.action = action;
 		entry->contract.local = local;
-        entry->contract.counter = rate * window_size;
-		//pthread_spin_init(&entry->contract.lock, 0);
+        entry->contract.rate = rate;
+        entry->contract.window_size = window_size;
+        entry->contract.counter = 0;
+
 
 		i++;
 
-		if (config.working_mode & MODE_XDP) {
-			struct bpf_map *map;
-			int i, contracts_map;
+		unsigned hash_key = jhash(&entry->key, sizeof(struct session_id), 0)%MAX_CONTRACTS;
+		skeleton->bss->contracts[hash_key] = entry->contract;
 
-			map = bpf_object__find_map_by_name(obj, "contracts");
-			contracts_map = bpf_map__fd(map);
-			if (contracts_map < 0) {
-				fprintf(stderr, "ERROR: no contracts map found: %s\n",
-					strerror(contracts_map));
-				exit(EXIT_FAILURE);
-			}
-			ret = bpf_map_update_elem(contracts_map, &entry->key, &entry->contract, BPF_ANY);
-			if (ret) {
-				fprintf(stderr, "ERROR: bpf_map_update_elem.\n");
-				exit(EXIT_FAILURE);
-			}
-		}
 	}
 
 	if (i != nrules) {
 		fprintf(stderr, "Incorrent input file: mismatch in rules number\n");
 		exit(-1);
 	}
-	
 
-	if (config.working_mode & MODE_AF_XDP) {
-		khashmap_init(&contracts, sizeof(struct session_id), sizeof(struct contract), MAX_CONTRACTS);
-		// my_hashmap__init(&acl, nrules, sizeof(struct session_id), sizeof(int));
-		for(int i = 0; i < nrules; i++){
-			if(khashmap_update_elem(&contracts, &entries[i].key,
-					&entries[i].contract, 0)){
-				fprintf(stderr, "Error adding elemetn to hash map\n");
-				exit(EXIT_FAILURE);
-			}
-		}
-	}
-	printf("Contract loaded..\n");
+	/* launch refilling-token thread */
+    pthread_create(&refill_thread, NULL, refill_counter, entries);
     return;
 }
 
@@ -330,6 +293,11 @@ static void int_usr(int sig)
 	print_stats(&config, obj);
 }
 
+static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
+{
+	return vfprintf(stderr, format, args);
+}
+
 int main(int argc, char **argv)
 {
 	signal(SIGINT, int_exit);
@@ -337,7 +305,39 @@ int main(int argc, char **argv)
 	signal(SIGABRT, int_exit);
 	signal(SIGUSR1, int_usr);
 
+	int err;
 	xsknfv_init(argc, argv, &config, &obj);
+
+	if(config.working_mode & MODE_XDP){
+		libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+		libbpf_set_print(libbpf_print_fn);
+
+		skeleton = policer_wc_kern__open();
+
+		err = policer_wc_kern__load(skeleton);
+			if (err) {
+				fprintf(stderr, "Failed to load and verify BPF skeleton\n");
+				return 1;
+		}
+		int if_index = if_nametoindex(config.interfaces[0]);
+		printf("Interface index: %d\n", if_index);
+		if(!if_index){
+			printf("get ifindex from interface name failed\n");
+			return EXIT_FAILURE;
+		}
+		skeleton->links.rate_limiter = bpf_program__attach_xdp(skeleton->progs.rate_limiter, if_index);
+		if(!skeleton->links.rate_limiter){
+			printf("unable to attach xdp program\n");
+			return EXIT_FAILURE;
+		}
+
+		if (config.working_mode & MODE_AF_XDP) {
+			enter_xsks_into_map(skeleton->obj);
+		}
+
+		printf("Skeleton OK\n");
+	}
+
 
 	parse_command_line(argc, argv, argv[0]);
 
@@ -345,19 +345,14 @@ int main(int argc, char **argv)
 
 	init_contracts("./contracts");
 
-	printf("Clock thread launched..\n");
-
 	xsknfv_start_workers();
 
 	init_stats();
-
-	//pthread_create(&clock_thread, NULL, update_clock, NULL);
 
 
 	while (!benchmark_done) {
 		sleep(1);
 		if (!opt_quiet) {
-			//dump_stats(config, obj, opt_extra_stats, opt_app_stats);
 
 #ifdef MONITOR_LOOKUP_TIME
 			unsigned long rx_npkts = 0;

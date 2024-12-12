@@ -157,7 +157,7 @@ static void xsk_configure_socket(char *iface, unsigned queue,
 	xsk_ring_prod__submit(&xsk->fq, FRAMES_PER_SOCKET);
 }
 
-static void enter_xsks_into_map(struct bpf_object *obj)
+ void enter_xsks_into_map(struct bpf_object *obj)
 {
 	struct bpf_map *map;
 	int xsks_map;
@@ -784,20 +784,20 @@ int xsknfv_init(int argc, char **argv, struct xsknfv_config *config,
 		}
 	}
 	
-	if (conf.working_mode & MODE_XDP) {
-		sprintf(conf.xdp_filename, "%s_kern.o", argv[0]);
-		printf("Loading custom eBPF programs...\n");
-		load_ebpf_programs(conf.xdp_filename, &obj);
-		*bpf_obj = obj;
+	// if (conf.working_mode & MODE_XDP) {
+	// 	sprintf(conf.xdp_filename, "%s_kern.o", argv[0]);
+	// 	printf("Loading custom eBPF programs...\n");
+	// 	load_ebpf_programs(conf.xdp_filename, &obj);
+	// 	*bpf_obj = obj;
 
-		if (conf.working_mode & MODE_AF_XDP) {
-			enter_xsks_into_map(obj);
-		}
+	// 	if (conf.working_mode & MODE_AF_XDP) {
+	// 		enter_xsks_into_map(obj);
+	// 	}
 
-		printf("Programs loaded\n");
-	} else {
-		*bpf_obj = NULL;
-	}
+	// 	printf("Programs loaded\n");
+	// } else {
+	// 	*bpf_obj = NULL;
+	// }
 
 	memcpy(config, &conf, sizeof(struct xsknfv_config));
 
@@ -871,3 +871,4 @@ int xsknfv_get_socket_stats(unsigned worker_idx, unsigned iface_idx,
 
 	return 0;
 }
+
